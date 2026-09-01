@@ -1,0 +1,25 @@
+# Local debugging only. Production runs this image behind the MSPbots MCP gateway,
+# which injects the per-tenant credential headers on every request.
+services:
+  exchange-online-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: exchange-online-mcp:latest
+    container_name: exchange-online-mcp
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - MCP_HTTP_PORT=8080
+      - MCP_HTTP_HOST=0.0.0.0
+      # Override only for sovereign clouds or to point at a local mock
+      - EXO_BASE_URL=https://outlook.office365.com
+      - ENTRA_LOGIN_BASE_URL=https://login.microsoftonline.com
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

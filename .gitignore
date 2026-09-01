@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+*.egg-info/
+dist/
+build/
+.ruff_cache/
+.pytest_cache/
+# Local test certificates — never commit key material
+*.pem
+*.pfx
+*.key
