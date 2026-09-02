@@ -88,14 +88,29 @@ def _classify(status_code: int, message: str = "") -> tuple[str, bool]:
 
 
 class ExoError(Exception):
-    def __init__(self, status_code: int, message: str):
+    def __init__(
+        self,
+        status_code: int,
+        message: str,
+        *,
+        code: str | None = None,
+        retryable: bool | None = None,
+    ):
         self.status_code = status_code
         self.message = message
+        # Set only where the status code alone classifies wrongly — see the
+        # undecodable-body case in _post.
+        self._code = code
+        self._retryable = retryable
         super().__init__(f"Exchange Online error {status_code}: {message}")
 
     def to_envelope(self) -> str:
         code, retryable = _classify(self.status_code, self.message)
-        return error_envelope(code, self.message, retryable)
+        return error_envelope(
+            self._code or code,
+            self.message,
+            retryable if self._retryable is None else self._retryable,
+        )
 
 
 def strip_odata(record: dict) -> dict:
@@ -159,6 +174,14 @@ class ExoClient:
             "Accept": "application/json",
             "X-ResponseFormat": "json",
             "client-request-id": str(uuid.uuid4()),
+            # Exchange answers some errors with a body of NUL bytes while still
+            # claiming `Content-Encoding: gzip`, which makes httpx raise
+            # DecodingError *before* the status code can be classified — a 403
+            # then looks like a transport failure. Asking for identity keeps the
+            # status readable no matter what the body holds. Retrying the request
+            # uncompressed instead would be cheaper on the wire but would re-run
+            # a cmdlet that may already have applied.
+            "Accept-Encoding": "identity",
         }
         anchor = self._anchor_mailbox()
         if anchor:
@@ -202,6 +225,16 @@ class ExoClient:
                 resp = await client.post(
                     url, headers=self._headers(token, max_page_size), json=body
                 )
+            except httpx.DecodingError as exc:
+                # A subclass of RequestError, but it means a response did arrive
+                # and only its body was unreadable. Retrying cannot change that,
+                # and the generic branch below would report it as a retryable
+                # network fault while discarding the status code.
+                raise ExoError(
+                    502,
+                    "the admin endpoint returned a response body that could not be decoded",
+                    retryable=False,
+                ) from exc
             except httpx.RequestError as exc:
                 last_exc = exc
                 if attempt < _MAX_RETRIES:
@@ -233,14 +266,46 @@ class ExoClient:
             return None
         try:
             payload = resp.json()
-        except ValueError:
-            return None
+        except ValueError as exc:
+            # Set-*/Remove-* legitimately answer with no body (handled above), but
+            # a body that is present and unparseable is not the same thing as "no
+            # records" — reporting it as an empty result would let a caller read
+            # an upstream fault as "this mailbox has no devices".
+            raise ExoError(
+                502,
+                "the admin endpoint returned a non-JSON response body",
+                retryable=False,
+            ) from exc
         return payload if isinstance(payload, dict) else {"Value": payload}
 
     def _raise_for_status(self, resp: httpx.Response) -> None:
         if resp.status_code < 400:
             return
         raise ExoError(resp.status_code, _error_message(resp))
+
+
+# Exchange sometimes answers an error with a body that carries no message at
+# all — a 403 arrives as Content-Length bytes of NUL, for instance — so these
+# statuses need a message of our own to stay actionable.
+_STATUS_HINTS = {
+    401: "Exchange rejected the access token for the admin endpoint",
+    403: (
+        "Exchange refused the cmdlet. The access token carries Exchange.ManageAsApp, so "
+        "this is an Exchange RBAC denial: confirm the app has a service principal in "
+        "Exchange Online (Get-ServicePrincipal) and a role assignment covering the cmdlet "
+        "(New-ManagementRoleAssignment -Role 'Recipient Management')"
+    ),
+}
+
+
+def _status_message(status_code: int) -> str:
+    hint = _STATUS_HINTS.get(status_code)
+    return f"HTTP {status_code}: {hint}" if hint else f"HTTP {status_code}"
+
+
+def _printable(text: str) -> str:
+    """Body text with control characters dropped — empty if nothing survives."""
+    return "".join(ch for ch in text if ch.isprintable() or ch in " \t\n").strip()
 
 
 def _error_message(resp: httpx.Response) -> str:
@@ -252,10 +317,12 @@ def _error_message(resp: httpx.Response) -> str:
     try:
         payload = resp.json()
     except ValueError:
-        return resp.text[:500] or f"HTTP {resp.status_code}"
+        # A body of NUL bytes is JSON-undecodable but truthy, so it would other-
+        # wise be echoed verbatim into the envelope.
+        return _printable(resp.text)[:500] or _status_message(resp.status_code)
     error = payload.get("error") if isinstance(payload, dict) else None
     if not isinstance(error, dict):
-        return f"HTTP {resp.status_code}"
+        return _status_message(resp.status_code)
     parts = [error.get("message") or ""]
     for detail in error.get("details") or []:
         if isinstance(detail, dict) and detail.get("message"):
@@ -268,4 +335,4 @@ def _error_message(resp: httpx.Response) -> str:
     for part in parts:
         if part and part not in seen:
             seen.append(part)
-    return "; ".join(seen)[:500] or f"HTTP {resp.status_code}"
+    return "; ".join(seen)[:500] or _status_message(resp.status_code)

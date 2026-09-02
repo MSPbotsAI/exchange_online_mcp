@@ -218,6 +218,99 @@ async def test_retries_then_succeeds_on_503(upstream, credentials, monkeypatch):
     assert slept == [1.0]
 
 
+@pytest.mark.asyncio
+async def test_admin_calls_ask_for_identity_encoding(upstream, credentials):
+    """Compression must stay off so a status code is never hidden behind a body
+    httpx cannot decode — Exchange sends NUL-filled bodies labelled gzip."""
+    upstream.responses["Get-Mailbox"] = [{"Identity": "alice"}]
+    await _client(credentials).invoke("Get-Mailbox", {"Identity": "alice"})
+    assert upstream.invoke_requests[0]["headers"]["accept-encoding"] == "identity"
+
+
+@pytest.mark.asyncio
+async def test_nul_filled_403_body_reports_the_status_not_the_nuls(upstream, credentials):
+    """Exchange denies app-only cmdlets with a 403 whose body is all NUL bytes.
+
+    The status has to survive, and the NULs must not reach the envelope.
+    """
+    import exo_mcp.api_client as module
+    import httpx
+
+    def handler(request):
+        if str(request.url).endswith("/InvokeCommand"):
+            return httpx.Response(403, content=b"\x00" * 985)
+        return upstream.handler(request)
+
+    module.set_http_client(httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    with pytest.raises(ExoError) as excinfo:
+        await _client(credentials).invoke("Get-Mailbox", {"Identity": "alice"})
+
+    assert excinfo.value.status_code == 403
+    assert "\x00" not in excinfo.value.message
+    # The message has to name the actual remedy: consent alone is not enough.
+    assert "New-ManagementRoleAssignment" in excinfo.value.message
+    envelope = excinfo.value.to_envelope()
+    assert '"code":"unauthorized"' in envelope
+    assert '"retryable":false' in envelope
+    assert "\\u0000" not in envelope
+
+
+@pytest.mark.asyncio
+async def test_undecodable_body_is_not_retried(upstream, credentials, monkeypatch):
+    """A DecodingError subclasses RequestError, but the response did arrive —
+    retrying it three times only delays a verdict that will not change."""
+    import exo_mcp.api_client as module
+    import httpx
+
+    slept: list[float] = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+
+    calls = {"n": 0}
+
+    def handler(request):
+        if str(request.url).endswith("/InvokeCommand"):
+            calls["n"] += 1
+            # Declared gzip, not actually gzip — httpx raises DecodingError.
+            return httpx.Response(
+                403, headers={"Content-Encoding": "gzip"}, content=b"\x00" * 336
+            )
+        return upstream.handler(request)
+
+    module.set_http_client(httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    with pytest.raises(ExoError) as excinfo:
+        await _client(credentials).invoke("Get-Mailbox", {"Identity": "alice"})
+
+    assert calls["n"] == 1
+    assert slept == []
+    assert "could not be decoded" in excinfo.value.message
+    assert '"retryable":false' in excinfo.value.to_envelope()
+
+
+@pytest.mark.asyncio
+async def test_unparseable_success_body_is_not_reported_as_no_records(upstream, credentials):
+    """An unreadable 200 body must not be indistinguishable from an empty result:
+    "this mailbox has no devices" is an offboarding decision."""
+    import exo_mcp.api_client as module
+    import httpx
+
+    def handler(request):
+        if str(request.url).endswith("/InvokeCommand"):
+            return httpx.Response(200, content=b"\x00" * 64)
+        return upstream.handler(request)
+
+    module.set_http_client(httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    with pytest.raises(ExoError) as excinfo:
+        await _client(credentials).invoke("Get-MobileDevice", {"Mailbox": "alice@contoso.com"})
+    assert "non-JSON" in excinfo.value.message
+
+
 def test_project_drops_odata_companions_and_absent_fields():
     record = {
         "Identity": "alice",

@@ -113,6 +113,14 @@ Tools never raise; they return a JSON envelope as their string result:
 `400` carrying a cmdlet exception; those are normalised to `not_found`. An empty list is
 a successful empty result, never `not_found`.
 
+One upstream quirk shapes the transport: Exchange denies an unroled app with a `403` whose
+body is `Content-Length` bytes of NUL, labelled `Content-Encoding: gzip`. Left alone that
+makes httpx raise `DecodingError` while reading the body — a subclass of `RequestError` —
+so the status would be lost and a deterministic `403` retried as a network fault. Admin
+calls therefore send `Accept-Encoding: identity`, statuses with no usable body get a
+message derived from the status, and an unreadable body is never reported as an empty
+result.
+
 ## Run it
 
 ```bash
