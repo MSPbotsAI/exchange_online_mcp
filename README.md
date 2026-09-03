@@ -43,20 +43,32 @@ are stripped, so a typical response is under 1.5 KB instead of the ~40 KB a raw
 
 ## Credentials (HTTP headers)
 
-Exchange Online app-only access accepts **certificates only** — not client secrets — so
-the certificate itself is the credential and this server mints the access token per
-request. Credentials are read from headers only; there is no environment-variable
-fallback, and nothing is cached between requests.
+The app-only credential is either a **certificate** or a **client secret** — send one,
+not both — and this server mints the access token from it per request. Credentials are
+read from headers only; there is no environment-variable fallback, and nothing is cached
+between requests.
+
+The Exchange Online PowerShell module accepts only certificates for app-only sign-in,
+which is why Exchange app-only access is often described as certificate-only. That is a
+module limitation: the admin REST endpoint used here takes an ordinary
+`client_credentials` token, and the [Admin API authentication
+reference](https://learn.microsoft.com/en-us/exchange/reference/admin-api-authentication)
+documents `client_secret` alongside the certificate assertion. The secret form has not
+yet been confirmed against the undocumented `adminapi/beta` InvokeCommand path this
+server calls, so the certificate form remains the proven one.
 
 | Header | Required | Meaning | Where it comes from |
 |---|---|---|---|
 | `X-Exo-Tenant-Id` | Yes | Tenant GUID **or** default domain (`contoso.onmicrosoft.com`). A domain also lets the server anchor app-only calls on the tenant system mailbox, which some cmdlets need | Entra admin center → Overview |
 | `X-Exo-Client-Id` | Yes | Application (client) ID of the registered app | Entra admin center → App registrations → your app → Overview |
-| `X-Exo-Certificate` | Yes | Base64 of the certificate **and** private key: either a PEM bundle or a PKCS#12 (`.pfx`) blob | Generated when you create the app credential (see below) |
+| `X-Exo-Certificate` | One of the two | Base64 of the certificate **and** private key: either a PEM bundle or a PKCS#12 (`.pfx`) blob | Generated when you create the app credential (see below) |
+| `X-Exo-Client-Secret` | One of the two | Client secret value of the registered app | Entra admin center → your app → Certificates & secrets → Client secrets |
 | `X-Exo-Certificate-Password` | No | Password for the `.pfx` / encrypted PEM. Omit when there is none | — |
 | `X-Exo-Anchor-Mailbox` | No | Overrides the `X-AnchorMailbox` routing hint, e.g. `UPN:admin@contoso.com` | — |
 
-Missing any required header on `/mcp` returns **401** with the missing names listed.
+Missing the tenant or application id — or both credential headers at once — on `/mcp`
+returns **401** with the missing names listed. When a certificate and a secret both
+arrive, the certificate wins.
 
 ### Tenant setup
 
@@ -64,8 +76,10 @@ Missing any required header on `/mcp` returns **401** with the missing names lis
 2. **API permissions → Add a permission → APIs my organization uses → Office 365
    Exchange Online → Application permissions → `Exchange.ManageAsApp`** → *Grant admin
    consent*.
-3. **Create the certificate** and upload the public half to the app
-   (*Certificates & secrets → Certificates → Upload certificate*):
+3. **Create the app credential.** Either a client secret (*Certificates & secrets →
+   Client secrets → New client secret* → copy the value into `X-Exo-Client-Secret`), or a
+   certificate whose public half is uploaded to the app (*Certificates & secrets →
+   Certificates → Upload certificate*):
    ```bash
    openssl req -x509 -newkey rsa:2048 -sha256 -days 730 -nodes \
      -keyout exo.key -out exo.crt -subj "/CN=mspbots-exo-mcp"
@@ -78,8 +92,9 @@ Missing any required header on `/mcp` returns **401** with the missing names lis
    covers every tool here; `View-Only Organization Management` is enough for the two
    read-only tools. Without a role assignment every cmdlet returns `unauthorized`.
 
-Certificates expire: rotate them before `notAfter` and re-upload. One certificate per
-tenant — this server never shares credentials across tenants.
+Both credential forms expire: rotate the certificate before `notAfter` and re-upload it,
+or renew the secret before its expiry. One credential per tenant — this server never
+shares credentials across tenants.
 
 ## Endpoints
 

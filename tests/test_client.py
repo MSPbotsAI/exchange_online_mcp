@@ -76,6 +76,52 @@ async def test_invoke_posts_cmdlet_input_and_admin_headers(upstream, credentials
 
 
 @pytest.mark.asyncio
+async def test_client_secret_replaces_the_assertion(upstream):
+    """The secret form is a plain client_credentials grant — no key, no assertion."""
+    upstream.responses["Get-Mailbox"] = [{"Identity": "alice"}]
+    creds = ExoCredentials(tenant_id=TENANT, client_id=CLIENT_ID, client_secret="s3cret")
+
+    await _client(creds).invoke("Get-Mailbox", {"Identity": "alice"})
+
+    form = upstream.token_requests[0]["form"]
+    assert form["grant_type"] == "client_credentials"
+    assert form["scope"] == SCOPE
+    assert form["client_id"] == CLIENT_ID
+    assert form["client_secret"] == "s3cret"
+    assert "client_assertion" not in form
+    assert "client_assertion_type" not in form
+
+
+@pytest.mark.asyncio
+async def test_certificate_wins_when_both_credentials_arrive(upstream, credentials):
+    upstream.responses["Get-Mailbox"] = [{"Identity": "alice"}]
+    creds = ExoCredentials(
+        tenant_id=TENANT,
+        client_id=CLIENT_ID,
+        certificate_b64=credentials.certificate_b64,
+        client_secret="s3cret",
+    )
+
+    await _client(creds).invoke("Get-Mailbox", {"Identity": "alice"})
+
+    form = upstream.token_requests[0]["form"]
+    assert "client_assertion" in form
+    assert "client_secret" not in form
+
+
+@pytest.mark.asyncio
+async def test_no_credential_is_unauthorized_without_calling_entra(upstream):
+    creds = ExoCredentials(tenant_id=TENANT, client_id=CLIENT_ID)
+
+    with pytest.raises(ExoError) as excinfo:
+        await _client(creds).invoke("Get-Mailbox", {"Identity": "alice"})
+
+    assert excinfo.value.status_code == 401
+    assert "X-Exo-Client-Secret" in excinfo.value.message
+    assert not upstream.token_requests
+
+
+@pytest.mark.asyncio
 async def test_guid_tenant_omits_anchor_and_explicit_anchor_wins(upstream, credentials):
     upstream.responses["Get-Mailbox"] = [{"Identity": "alice"}]
     guid_creds = ExoCredentials(

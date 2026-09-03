@@ -34,7 +34,7 @@ _MAX_RETRIES = 2
 _MAX_BACKOFF_SECONDS = 8.0
 
 # One shared connection pool for the process lifetime. It holds no credentials:
-# tokens are minted per request from header-supplied certificates, so sharing
+# tokens are minted per request from header-supplied credentials, so sharing
 # the pool across tenants is safe (server.py's contextvar isolation is what
 # actually keeps tenants apart).
 _http_client: httpx.AsyncClient | None = None
@@ -153,8 +153,9 @@ class ExoClient:
             except CredentialError as exc:
                 raise ExoError(401, str(exc)) from exc
             except TokenError as exc:
-                # A rejected certificate is a credential problem, not a bad
-                # argument: report it as unauthorized unless the network failed.
+                # A rejected certificate or secret is a credential problem, not
+                # a bad argument: report it as unauthorized unless the network
+                # failed.
                 status = 401 if exc.status_code and exc.status_code != 0 else 0
                 raise ExoError(status, exc.message) from exc
         return self._token

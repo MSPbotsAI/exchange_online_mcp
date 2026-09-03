@@ -149,7 +149,11 @@ def main() -> int:
         check(
             "401 body lists the required headers",
             payload.get("required_headers")
-            == ["X-Exo-Tenant-Id", "X-Exo-Client-Id", "X-Exo-Certificate"],
+            == [
+                "X-Exo-Tenant-Id",
+                "X-Exo-Client-Id",
+                "X-Exo-Certificate or X-Exo-Client-Secret",
+            ],
             json.dumps(payload.get("required_headers")),
         )
 

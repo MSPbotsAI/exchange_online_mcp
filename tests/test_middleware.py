@@ -8,11 +8,14 @@ from starlette.testclient import TestClient
 
 from exo_mcp.config import Settings
 from exo_mcp.server import (
+    CREDENTIAL_HEADERS,
     REQUIRED_HEADERS,
     GatewayCredentialMiddleware,
     _credentials_var,
     get_client_from_context,
 )
+
+EITHER_CREDENTIAL = " or ".join(CREDENTIAL_HEADERS)
 
 HEADERS = {
     "X-Exo-Tenant-Id": "contoso.onmicrosoft.com",
@@ -35,6 +38,7 @@ def _app(settings: Settings | None = None):
                 "client_id": creds.client_id,
                 "certificate_b64": creds.certificate_b64,
                 "certificate_password": creds.certificate_password,
+                "client_secret": creds.client_secret,
                 "anchor_mailbox": creds.anchor_mailbox,
                 "invoke_url": client.invoke_url,
             }
@@ -53,8 +57,9 @@ def test_missing_all_headers_returns_401_listing_them():
     resp = TestClient(_app()).post("/mcp")
     assert resp.status_code == 401
     body = resp.json()
-    assert body["required_headers"] == list(REQUIRED_HEADERS)
-    assert body["missing_headers"] == list(REQUIRED_HEADERS)
+    expected = [*REQUIRED_HEADERS, EITHER_CREDENTIAL]
+    assert body["required_headers"] == expected
+    assert body["missing_headers"] == expected
 
 
 @pytest.mark.parametrize("omitted", list(REQUIRED_HEADERS))
@@ -63,6 +68,23 @@ def test_each_required_header_is_enforced(omitted):
     resp = TestClient(_app()).post("/mcp", headers=headers)
     assert resp.status_code == 401
     assert resp.json()["missing_headers"] == [omitted]
+
+
+def test_no_credential_header_at_all_returns_401():
+    """Certificate and secret are each optional, but one of them must be there."""
+    headers = {k: v for k, v in HEADERS.items() if k != "X-Exo-Certificate"}
+    resp = TestClient(_app()).post("/mcp", headers=headers)
+    assert resp.status_code == 401
+    assert resp.json()["missing_headers"] == [EITHER_CREDENTIAL]
+
+
+def test_client_secret_alone_is_accepted():
+    headers = {k: v for k, v in HEADERS.items() if k != "X-Exo-Certificate"}
+    resp = TestClient(_app()).post("/mcp", headers={**headers, "X-Exo-Client-Secret": "s3cret"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["client_secret"] == "s3cret"
+    assert body["certificate_b64"] is None
 
 
 def test_credentials_reach_the_request_context():
@@ -80,6 +102,7 @@ def test_credentials_reach_the_request_context():
     assert body["client_id"] == HEADERS["X-Exo-Client-Id"]
     assert body["certificate_b64"] == HEADERS["X-Exo-Certificate"]
     assert body["certificate_password"] == "pw"
+    assert body["client_secret"] is None
     assert body["anchor_mailbox"] == "UPN:admin@contoso.com"
     assert body["invoke_url"] == (
         "https://outlook.office365.com/adminapi/beta/contoso.onmicrosoft.com/InvokeCommand"

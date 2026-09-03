@@ -1,13 +1,19 @@
-"""App-only certificate authentication against Entra ID.
+"""App-only authentication against Entra ID.
 
-Exchange Online's app-only access does not accept client secrets — only
-certificates — so the credential that reaches this service is a certificate,
-and the access token is minted here.
+Two credential forms are accepted, and either one on its own is enough:
 
-Everything is per-request: the certificate arrives in headers, signs a
-short-lived client assertion, and the resulting token is discarded with the
-request. No credential or derived token is cached across requests, and none of
-it is ever logged.
+- a certificate, which signs an RS256 client assertion (`x5t` header), or
+- a client secret, sent directly in the client_credentials request.
+
+The Exchange Online PowerShell module offers only the certificate form, which is
+why app-only access to Exchange is widely described as certificate-only; the
+admin REST endpoint this service calls documents both. The certificate form
+stays supported because the secret form is not yet proven against the
+undocumented `adminapi/beta` InvokeCommand path this server uses.
+
+Everything is per-request: the credential arrives in headers, mints a
+short-lived token, and that token is discarded with the request. No credential
+or derived token is cached across requests, and none of it is ever logged.
 """
 
 import base64
@@ -51,13 +57,19 @@ class TokenError(Exception):
 
 @dataclass(frozen=True)
 class ExoCredentials:
-    """One tenant's app-only credentials, valid for the current request only."""
+    """One tenant's app-only credentials, valid for the current request only.
+
+    The proof of identity is either `certificate_b64` or `client_secret`;
+    server.py refuses the request before it reaches here when neither header was
+    sent. A certificate takes precedence if both happen to arrive.
+    """
 
     tenant_id: str
     client_id: str
-    certificate_b64: str
+    certificate_b64: str | None = None
     certificate_password: str | None = None
     anchor_mailbox: str | None = None
+    client_secret: str | None = None
 
 
 def _decode_blob(certificate_b64: str) -> bytes:
@@ -146,22 +158,37 @@ def build_client_assertion(creds: ExoCredentials, audience: str) -> str:
         ) from exc
 
 
+def _grant_payload(creds: ExoCredentials, endpoint: str) -> dict[str, str]:
+    """The client_credentials form fields for whichever credential was supplied."""
+    payload = {
+        "grant_type": "client_credentials",
+        "client_id": creds.client_id,
+        "scope": SCOPE,
+    }
+    if creds.certificate_b64:
+        payload["client_assertion_type"] = (
+            "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+        )
+        payload["client_assertion"] = build_client_assertion(creds, endpoint)
+    elif creds.client_secret:
+        payload["client_secret"] = creds.client_secret
+    else:
+        raise CredentialError(
+            "no app-only credential supplied: send either X-Exo-Certificate or "
+            "X-Exo-Client-Secret"
+        )
+    return payload
+
+
 async def fetch_access_token(
     creds: ExoCredentials, login_base_url: str, http_client: httpx.AsyncClient
 ) -> str:
-    """Exchange the certificate for an Exchange Online admin access token."""
+    """Exchange the credential for an Exchange Online admin access token."""
     endpoint = token_endpoint(login_base_url, creds.tenant_id)
-    assertion = build_client_assertion(creds, endpoint)
     try:
         resp = await http_client.post(
             endpoint,
-            data={
-                "grant_type": "client_credentials",
-                "client_id": creds.client_id,
-                "scope": SCOPE,
-                "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-                "client_assertion": assertion,
-            },
+            data=_grant_payload(creds, endpoint),
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             timeout=_TOKEN_TIMEOUT,
         )

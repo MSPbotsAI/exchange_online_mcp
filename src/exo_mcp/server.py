@@ -16,9 +16,14 @@ HEADER_TENANT_ID = "X-Exo-Tenant-Id"
 HEADER_CLIENT_ID = "X-Exo-Client-Id"
 HEADER_CERTIFICATE = "X-Exo-Certificate"
 HEADER_CERTIFICATE_PASSWORD = "X-Exo-Certificate-Password"
+HEADER_CLIENT_SECRET = "X-Exo-Client-Secret"
 HEADER_ANCHOR_MAILBOX = "X-Exo-Anchor-Mailbox"
 
-REQUIRED_HEADERS = (HEADER_TENANT_ID, HEADER_CLIENT_ID, HEADER_CERTIFICATE)
+REQUIRED_HEADERS = (HEADER_TENANT_ID, HEADER_CLIENT_ID)
+# The app-only credential itself: a certificate or a client secret, either one
+# alone. Both are optional headers on their own, so their absence is checked
+# together rather than through REQUIRED_HEADERS.
+CREDENTIAL_HEADERS = (HEADER_CERTIFICATE, HEADER_CLIENT_SECRET)
 
 # Per-request credential isolation via contextvars. GatewayCredentialMiddleware
 # sets this before the MCP handler runs and resets it in finally; asyncio copies
@@ -42,8 +47,9 @@ class GatewayCredentialMiddleware:
 
     Reads the per-tenant app-only credentials from request headers into the
     contextvar. Returns 401 on /mcp requests that are missing any required
-    header. There is deliberately no environment-variable fallback: one tenant
-    silently using another's certificate would be a cross-tenant data leak.
+    header, or that carry neither of the two credential headers. There is
+    deliberately no environment-variable fallback: one tenant silently using
+    another's credential would be a cross-tenant data leak.
     """
 
     def __init__(self, app: ASGIApp, settings: Settings):
@@ -61,16 +67,22 @@ class GatewayCredentialMiddleware:
 
         headers = Request(scope).headers
         missing = [name for name in REQUIRED_HEADERS if not headers.get(name.lower())]
+        if not any(headers.get(name.lower()) for name in CREDENTIAL_HEADERS):
+            missing.append(" or ".join(CREDENTIAL_HEADERS))
         if missing:
             response = JSONResponse(
                 {
                     "error": "Missing credentials",
                     "message": (
                         "This server requires the tenant's Exchange Online app-only "
-                        "certificate credentials in request headers"
+                        "credentials in request headers: the tenant and application "
+                        "ids, plus either a certificate or a client secret"
                     ),
                     "missing_headers": missing,
-                    "required_headers": list(REQUIRED_HEADERS),
+                    "required_headers": [
+                        *REQUIRED_HEADERS,
+                        " or ".join(CREDENTIAL_HEADERS),
+                    ],
                 },
                 status_code=401,
             )
@@ -80,9 +92,10 @@ class GatewayCredentialMiddleware:
         credentials = ExoCredentials(
             tenant_id=headers[HEADER_TENANT_ID.lower()],
             client_id=headers[HEADER_CLIENT_ID.lower()],
-            certificate_b64=headers[HEADER_CERTIFICATE.lower()],
+            certificate_b64=headers.get(HEADER_CERTIFICATE.lower()) or None,
             certificate_password=headers.get(HEADER_CERTIFICATE_PASSWORD.lower()) or None,
             anchor_mailbox=headers.get(HEADER_ANCHOR_MAILBOX.lower()) or None,
+            client_secret=headers.get(HEADER_CLIENT_SECRET.lower()) or None,
         )
 
         ctx_token = _credentials_var.set(credentials)
