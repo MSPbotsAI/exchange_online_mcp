@@ -53,9 +53,12 @@ which is why Exchange app-only access is often described as certificate-only. Th
 module limitation: the admin REST endpoint used here takes an ordinary
 `client_credentials` token, and the [Admin API authentication
 reference](https://learn.microsoft.com/en-us/exchange/reference/admin-api-authentication)
-documents `client_secret` alongside the certificate assertion. The secret form has not
-yet been confirmed against the undocumented `adminapi/beta` InvokeCommand path this
-server calls, so the certificate form remains the proven one.
+documents `client_secret` alongside the certificate assertion. Both forms are confirmed
+against the undocumented `adminapi/beta` InvokeCommand path this server calls: a
+secret-minted token (`appidacr=1`) holding `Exchange.ManageAsApp` runs cmdlets normally,
+so Exchange — unlike SharePoint — does not reject app-only tokens by how they were
+minted. Prefer the certificate anyway where key material is manageable: no shared secret
+has to leave the tenant.
 
 | Header | Required | Meaning | Where it comes from |
 |---|---|---|---|

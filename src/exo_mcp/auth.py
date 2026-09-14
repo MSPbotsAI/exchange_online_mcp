@@ -7,9 +7,12 @@ Two credential forms are accepted, and either one on its own is enough:
 
 The Exchange Online PowerShell module offers only the certificate form, which is
 why app-only access to Exchange is widely described as certificate-only; the
-admin REST endpoint this service calls documents both. The certificate form
-stays supported because the secret form is not yet proven against the
-undocumented `adminapi/beta` InvokeCommand path this server uses.
+admin REST endpoint this service calls documents both. Both forms are confirmed
+against the undocumented `adminapi/beta` InvokeCommand path this server uses: a
+secret-minted token (`appidacr=1`) carrying Exchange.ManageAsApp runs cmdlets
+normally, so Exchange does not gate this endpoint on how the token was minted
+the way SharePoint does. The certificate stays the default because no shared
+secret has to leave the tenant for it.
 
 Everything is per-request: the credential arrives in headers, mints a
 short-lived token, and that token is discarded with the request. No credential
