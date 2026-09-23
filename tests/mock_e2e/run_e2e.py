@@ -192,7 +192,7 @@ def main() -> int:
         tools = rpc_result(body)["result"]["tools"]
         names = sorted(tool["name"] for tool in tools)
         check(
-            "6 exo_ tools listed",
+            "7 exo_ tools listed",
             names
             == [
                 "exo_convert_mailbox_to_shared",
@@ -200,6 +200,7 @@ def main() -> int:
                 "exo_list_mobile_devices",
                 "exo_remove_distribution_group_member",
                 "exo_remove_mobile_device",
+                "exo_set_mailbox_forwarding",
                 "exo_set_mailbox_hidden",
             ],
             ", ".join(names),
@@ -213,6 +214,11 @@ def main() -> int:
             ("exo_get_mailbox", {"identity": "alice@contoso.com"}),
             ("exo_convert_mailbox_to_shared", {"identity": "alice@contoso.com"}),
             ("exo_set_mailbox_hidden", {"identity": "alice@contoso.com", "hidden": True}),
+            (
+                "exo_set_mailbox_forwarding",
+                {"identity": "alice@contoso.com", "forward_to": "bob@contoso.com"},
+            ),
+            ("exo_set_mailbox_forwarding", {"identity": "alice@contoso.com"}),
             (
                 "exo_remove_distribution_group_member",
                 {"group": "all-staff@contoso.com", "member": "alice@contoso.com"},
@@ -258,6 +264,14 @@ def main() -> int:
                 "Get-Mailbox",
                 "Get-MailboxStatistics",
                 "Set-Mailbox",
+                "Get-Mailbox",
+                "Set-Mailbox",
+                "Get-Mailbox",
+                # exo_set_mailbox_forwarding reads first so it can report what
+                # it replaced, then writes, then reads back: set, then clear.
+                "Get-Mailbox",
+                "Set-Mailbox",
+                "Get-Mailbox",
                 "Get-Mailbox",
                 "Set-Mailbox",
                 "Get-Mailbox",

@@ -21,6 +21,25 @@ from .auth import CredentialError, ExoCredentials, TokenError, fetch_access_toke
 DEFAULT_BASE_URL = "https://outlook.office365.com"
 DEFAULT_LOGIN_BASE_URL = "https://login.microsoftonline.com"
 
+
+class _Clear:
+    """Sentinel for a cmdlet parameter that must reach Exchange as $null.
+
+    `invoke` drops None parameters so optional arguments can be passed
+    unconditionally, which leaves no way to say "empty this property" —
+    `Set-Mailbox -ForwardingAddress $null` and friends need a null that
+    survives to the wire. This marker does that without giving None two
+    meanings.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "CLEAR"
+
+
+CLEAR = _Clear()
+
 # Tenant-wide system mailbox used as the routing hint for app-only calls, where
 # there is no signed-in user to anchor on. Only usable when the tenant is
 # identified by domain rather than GUID.
@@ -104,10 +123,19 @@ class ExoError(Exception):
         self._retryable = retryable
         super().__init__(f"Exchange Online error {status_code}: {message}")
 
+    @property
+    def code(self) -> str:
+        """The error code this maps to — the same value to_envelope reports.
+
+        Lets a tool branch on the kind of failure (a forwarding target that
+        does not resolve, say) without re-parsing its own envelope.
+        """
+        return self._code or _classify(self.status_code, self.message)[0]
+
     def to_envelope(self) -> str:
-        code, retryable = _classify(self.status_code, self.message)
+        _, retryable = _classify(self.status_code, self.message)
         return error_envelope(
-            self._code or code,
+            self.code,
             self.message,
             retryable if self._retryable is None else self._retryable,
         )
@@ -197,11 +225,21 @@ class ExoClient:
         parameters: dict[str, Any] | None = None,
         max_page_size: int | None = None,
     ) -> list[dict]:
-        """Run one cmdlet and return its result records (empty list for none)."""
+        """Run one cmdlet and return its result records (empty list for none).
+
+        A parameter set to None is dropped, so a caller can pass optional
+        arguments unconditionally. Pass CLEAR to send an explicit JSON null
+        instead — the wire form of PowerShell's $null, which is how a cmdlet
+        is told to empty a property rather than leave it alone.
+        """
         body = {
             "CmdletInput": {
                 "CmdletName": cmdlet,
-                "Parameters": {k: v for k, v in (parameters or {}).items() if v is not None},
+                "Parameters": {
+                    key: (None if value is CLEAR else value)
+                    for key, value in (parameters or {}).items()
+                    if value is not None
+                },
             }
         }
         payload = await self._post(body, max_page_size)

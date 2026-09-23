@@ -4,7 +4,7 @@ import jwt
 import pytest
 from conftest import CLIENT_ID, TENANT
 
-from exo_mcp.api_client import ExoClient, ExoError
+from exo_mcp.api_client import CLEAR, ExoClient, ExoError
 from exo_mcp.auth import SCOPE, ExoCredentials, certificate_thumbprint
 from exo_mcp.tools._common import parse_size_bytes, project
 
@@ -73,6 +73,29 @@ async def test_invoke_posts_cmdlet_input_and_admin_headers(upstream, credentials
         f"UPN:SystemMailbox{{bb558c35-97f1-4cb9-8ff7-d53741dc928c}}@{TENANT}"
     )
     assert sent["headers"]["client-request-id"]
+
+
+@pytest.mark.asyncio
+async def test_clear_sentinel_survives_as_an_explicit_null(upstream, credentials):
+    """CLEAR is how a tool says $null — the one thing a dropped None cannot say."""
+    upstream.responses["Set-Mailbox"] = []
+
+    await _client(credentials).invoke(
+        "Set-Mailbox",
+        {
+            "Identity": "alice@contoso.com",
+            "ForwardingAddress": CLEAR,
+            "DeliverToMailboxAndForward": False,
+            "Untouched": None,
+        },
+    )
+
+    assert upstream.invoke_requests[0]["parameters"] == {
+        "Identity": "alice@contoso.com",
+        "ForwardingAddress": None,
+        # False is a value, not an absence: it has to reach Exchange.
+        "DeliverToMailboxAndForward": False,
+    }
 
 
 @pytest.mark.asyncio

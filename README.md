@@ -33,6 +33,7 @@ POST https://outlook.office365.com/adminapi/beta/{tenant}/InvokeCommand
 | `exo_get_mailbox(identity, include_statistics=True)` | read-only. Returns the mailbox, its statistics, and a `shared_conversion` block (`size_gb`, `over_limit`, `archive_enabled`, `litigation_hold_enabled`, `license_required`) answering "can this become a licence-free shared mailbox?" |
 | `exo_convert_mailbox_to_shared(identity)` | write, destructive. `Set-Mailbox -Type Shared`, then reads the mailbox back to confirm |
 | `exo_set_mailbox_hidden(identity, hidden)` | write, idempotent, reversible |
+| `exo_set_mailbox_forwarding(identity, forward_to=None, deliver_and_forward=True)` | write, idempotent, reversible. Forwards to a recipient **inside the tenant** only (`ForwardingAddress`); omit `forward_to` to switch forwarding off, which also clears any external `ForwardingSmtpAddress` set elsewhere. Reports `previous_forwarding` |
 | `exo_remove_distribution_group_member(group, member, bypass_security_group_manager_check=True)` | write, destructive. One named member per call — no bulk removal |
 | `exo_list_mobile_devices(mailbox, limit=50)` | read-only. `limit` 1–200, results truncated with `has_more` |
 | `exo_remove_mobile_device(device_id)` | write, destructive. Removes the mailbox partnership only — it does **not** wipe data on the handset |
@@ -159,7 +160,7 @@ uv run python tests/mock_e2e/run_e2e.py         # real container, mocked Entra +
 `tests/mock_e2e/` runs the built image against a local stand-in for Entra ID and the
 admin endpoint: it generates a throwaway certificate, verifies the client assertion the
 container signs (RS256, `x5t`, audience), and drives
-`401 → initialize → tools/list → tools/call` for all six tools. No customer tenant
+`401 → initialize → tools/list → tools/call` for all seven tools. No customer tenant
 required.
 
 ## Delivery checklist (SOP §14 self-assessment)
@@ -194,7 +195,7 @@ Container and deliverables
 - [x] Credential header table present (above)
 
 Agent-facing design
-- [x] 6 tools, modelled on the offboarding flow rather than on endpoints
+- [x] 7 tools, modelled on the offboarding flow rather than on endpoints
 - [x] Every description ≤ 500 chars (longest 404), first line ≤ 100 chars
 - [x] Service-level `instructions` provided (1027 chars)
 - [x] Tools self-describing; required/optional parameters explicit

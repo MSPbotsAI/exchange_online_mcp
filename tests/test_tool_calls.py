@@ -248,3 +248,148 @@ async def test_remove_mobile_device_parameters(mcp, upstream, credentials):
         "Identity": "guid-1",
         "Confirm": False,
     }
+
+
+FORWARDED_RECORD = {
+    **MAILBOX_RECORD,
+    "ForwardingAddress": "contoso.onmicrosoft.com/Users/bob",
+    "DeliverToMailboxAndForward": True,
+}
+
+
+@pytest.mark.asyncio
+async def test_set_forwarding_targets_the_internal_field_and_keeps_a_copy(
+    mcp, upstream, credentials
+):
+    upstream.responses["Get-Mailbox"] = [MAILBOX_RECORD]
+    upstream.responses["Set-Mailbox"] = []
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_set_mailbox_forwarding",
+        {"identity": "alice@contoso.com", "forward_to": "bob@contoso.com"},
+    )
+
+    set_call = [r for r in upstream.invoke_requests if r["cmdlet"] == "Set-Mailbox"][0]
+    assert set_call["parameters"] == {
+        "Identity": "alice@contoso.com",
+        # Internal-only by construction: ForwardingAddress refuses anything
+        # that is not a recipient in the tenant.
+        "ForwardingAddress": "bob@contoso.com",
+        # Cleared so an external target set elsewhere cannot survive alongside.
+        "ForwardingSmtpAddress": None,
+        "DeliverToMailboxAndForward": True,
+    }
+    assert result["previous_forwarding"] == {}
+
+
+@pytest.mark.asyncio
+async def test_set_forwarding_can_forward_without_keeping_a_copy(
+    mcp, upstream, credentials
+):
+    upstream.responses["Get-Mailbox"] = [MAILBOX_RECORD]
+    upstream.responses["Set-Mailbox"] = []
+
+    await call(
+        mcp,
+        credentials,
+        "exo_set_mailbox_forwarding",
+        {
+            "identity": "alice@contoso.com",
+            "forward_to": "bob@contoso.com",
+            "deliver_and_forward": False,
+        },
+    )
+
+    set_call = [r for r in upstream.invoke_requests if r["cmdlet"] == "Set-Mailbox"][0]
+    assert set_call["parameters"]["DeliverToMailboxAndForward"] is False
+
+
+@pytest.mark.asyncio
+async def test_clearing_forwarding_empties_every_field_and_reports_the_old_one(
+    mcp, upstream, credentials
+):
+    upstream.responses["Get-Mailbox"] = [FORWARDED_RECORD]
+    upstream.responses["Set-Mailbox"] = []
+
+    result = await call(
+        mcp, credentials, "exo_set_mailbox_forwarding", {"identity": "alice@contoso.com"}
+    )
+
+    set_call = [r for r in upstream.invoke_requests if r["cmdlet"] == "Set-Mailbox"][0]
+    assert set_call["parameters"] == {
+        "Identity": "alice@contoso.com",
+        "ForwardingAddress": None,
+        # Cleared too: forwarding configured outside this tool would otherwise
+        # keep running after a "turn it off" call.
+        "ForwardingSmtpAddress": None,
+        "DeliverToMailboxAndForward": False,
+    }
+    assert result["previous_forwarding"] == {
+        "forwarding_address": "contoso.onmicrosoft.com/Users/bob",
+        "deliver_to_mailbox_and_forward": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_forwarding_state_comes_from_the_read_back(mcp, upstream, credentials):
+    upstream.responses["Get-Mailbox"] = [FORWARDED_RECORD]
+    upstream.responses["Set-Mailbox"] = []
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_set_mailbox_forwarding",
+        {"identity": "alice@contoso.com", "forward_to": "bob@contoso.com"},
+    )
+
+    assert result["forwarding_enabled"] is True
+    assert result["forwarding"]["forwarding_address"] == "contoso.onmicrosoft.com/Users/bob"
+
+
+@pytest.mark.asyncio
+async def test_external_forwarding_target_is_rejected_readably(mcp, upstream, credentials):
+    upstream.responses["Get-Mailbox"] = [MAILBOX_RECORD]
+    upstream.cmdlet_errors["Set-Mailbox"] = (
+        400,
+        {
+            "error": {
+                "message": "Error executing cmdlet",
+                "details": [
+                    {
+                        "message": "The operation couldn't be performed because object "
+                        "'someone@gmail.com' couldn't be found."
+                    }
+                ],
+            }
+        },
+    )
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_set_mailbox_forwarding",
+        {"identity": "alice@contoso.com", "forward_to": "someone@gmail.com"},
+    )
+
+    # Exchange's own wording reads as "that mailbox does not exist", which sends
+    # the caller looking in the wrong place.
+    assert result["error"]["code"] == "invalid_argument"
+    assert "not a recipient in this tenant" in result["error"]["message"]
+    assert result["error"]["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_forwarding_an_unknown_mailbox_does_not_write(mcp, upstream, credentials):
+    upstream.responses["Get-Mailbox"] = []
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_set_mailbox_forwarding",
+        {"identity": "ghost@contoso.com", "forward_to": "bob@contoso.com"},
+    )
+
+    assert result["error"]["code"] == "not_found"
+    assert not [r for r in upstream.invoke_requests if r["cmdlet"] == "Set-Mailbox"]

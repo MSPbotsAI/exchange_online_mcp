@@ -5,8 +5,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from .._json import dump_json_capped
-from ..api_client import ExoClient, ExoError
+from .._json import dump_json_capped, error_envelope
+from ..api_client import CLEAR, ExoClient, ExoError
 from ._common import (
     NO_CREDENTIALS,
     SHARED_MAILBOX_LIMIT_BYTES,
@@ -38,6 +38,18 @@ _STATISTICS_FIELDS = {
     "TotalDeletedItemSize": "total_deleted_item_size",
     "LastLogonTime": "last_logon_time",
 }
+
+
+_FORWARDING_FIELDS = (
+    "forwarding_address",
+    "forwarding_smtp_address",
+    "deliver_to_mailbox_and_forward",
+)
+
+
+def _forwarding_state(mailbox: dict) -> dict:
+    """The forwarding-related subset of a projected mailbox."""
+    return {key: mailbox[key] for key in _FORWARDING_FIELDS if key in mailbox}
 
 
 async def _read_mailbox(client: ExoClient, identity: str) -> dict | None:
@@ -198,4 +210,100 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
             ]
         elif not mailbox:
             result["verified"] = False
+        return dump_json_capped(result)
+
+    @mcp.tool(annotations=ToolAnnotations(idempotentHint=True))
+    async def exo_set_mailbox_forwarding(
+        identity: Annotated[
+            str,
+            Field(description="Mailbox whose mail is forwarded. UPN, primary SMTP "
+                              "address, alias or GUID."),
+        ],
+        forward_to: Annotated[
+            str | None,
+            Field(description="Recipient inside this tenant to forward to — a mailbox, "
+                              "mail user, distribution group or mail contact, named by "
+                              "UPN, SMTP address, alias or GUID. Leave unset to turn "
+                              "forwarding off."),
+        ] = None,
+        deliver_and_forward: Annotated[
+            bool,
+            Field(description="Keep a copy of each message in the original mailbox as "
+                              "well as forwarding it. False forwards only, leaving the "
+                              "original mailbox empty of new mail."),
+        ] = True,
+    ) -> str:
+        """Forward a mailbox's incoming mail to someone else in the same tenant.
+
+        For a departure or an absence, when mail must keep reaching a
+        colleague. The target must be a recipient inside this tenant;
+        outside addresses are not supported.
+
+        The mailbox keeps its own copy unless deliver_and_forward is false.
+        Call without forward_to to switch forwarding off — that also clears
+        any external forwarding set elsewhere. Reports what it replaced.
+        """
+        client = client_factory()
+        if client is None:
+            return NO_CREDENTIALS
+
+        try:
+            before = await _read_mailbox(client, identity)
+        except ExoError as exc:
+            return exc.to_envelope()
+        if before is None:
+            return ExoError(404, f"No mailbox found for '{identity}'").to_envelope()
+
+        if forward_to:
+            parameters = {
+                "Identity": identity,
+                "ForwardingAddress": forward_to,
+                # An address left in the SMTP field would keep forwarding to
+                # that target alongside the new one.
+                "ForwardingSmtpAddress": CLEAR,
+                "DeliverToMailboxAndForward": deliver_and_forward,
+            }
+        else:
+            parameters = {
+                "Identity": identity,
+                "ForwardingAddress": CLEAR,
+                "ForwardingSmtpAddress": CLEAR,
+                # Left set, it would silently apply to whoever configures
+                # forwarding next.
+                "DeliverToMailboxAndForward": False,
+            }
+
+        try:
+            await client.invoke("Set-Mailbox", parameters)
+        except ExoError as exc:
+            # The mailbox resolved a moment ago, so an unresolved recipient now
+            # is the forwarding target — usually an address outside the tenant,
+            # which ForwardingAddress cannot take. Passed through unchanged it
+            # reads as "that mailbox does not exist".
+            if forward_to and exc.code == "not_found":
+                return error_envelope(
+                    "invalid_argument",
+                    f"Cannot forward to '{forward_to}': it is not a recipient in this "
+                    "tenant. Forwarding targets must be a mailbox, mail user, "
+                    "distribution group or mail contact inside the tenant — external "
+                    "addresses are not supported.",
+                    False,
+                )
+            return exc.to_envelope()
+
+        result: dict = {"identity": identity, "previous_forwarding": _forwarding_state(before)}
+        try:
+            after = await _read_mailbox(client, identity)
+        except ExoError:
+            after = None
+        if after is None:
+            # The write itself succeeded; only the read-back failed.
+            result["verified"] = False
+            result["forwarding_enabled"] = bool(forward_to)
+        else:
+            state = _forwarding_state(after)
+            result["forwarding"] = state
+            result["forwarding_enabled"] = bool(
+                state.get("forwarding_address") or state.get("forwarding_smtp_address")
+            )
         return dump_json_capped(result)

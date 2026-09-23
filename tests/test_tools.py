@@ -18,6 +18,7 @@ EXPECTED_TOOLS = {
     "exo_get_mailbox": {"identity"},
     "exo_convert_mailbox_to_shared": {"identity"},
     "exo_set_mailbox_hidden": {"identity", "hidden"},
+    "exo_set_mailbox_forwarding": {"identity"},
     "exo_remove_distribution_group_member": {"group", "member"},
     "exo_list_mobile_devices": {"mailbox"},
     "exo_remove_mobile_device": {"device_id"},
