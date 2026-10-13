@@ -63,8 +63,35 @@ FIXTURES: dict[str, list[dict]] = {
         }
         for i in range(3)
     ],
+    "Get-Recipient": [
+        {
+            "Identity": "all-staff@contoso.com",
+            "RecipientTypeDetails": "MailUniversalDistributionGroup",
+            "IsDirSynced": False,
+        }
+    ],
+    "Get-DistributionGroupMember": [
+        {
+            "Name": "Bob Jones",
+            "PrimarySmtpAddress": "bob@contoso.com",
+            "Alias": "bob",
+            "Guid": "22222222-0000-0000-0000-000000000000",
+        }
+    ],
+    "Get-MailboxAutoReplyConfiguration": [
+        {
+            "AutoReplyState": "Scheduled",
+            "ExternalAudience": "Known",
+            "InternalMessage": "In the office next week.",
+            "ExternalMessage": "I am out of office.",
+            "StartTime": "2026-01-09T23:00:00Z",
+            "EndTime": "2026-01-16T23:00:00Z",
+        }
+    ],
     "Set-Mailbox": [],
     "Remove-DistributionGroupMember": [],
+    "Add-DistributionGroupMember": [],
+    "Set-MailboxAutoReplyConfiguration": [],
     "Remove-MobileDevice": [],
 }
 

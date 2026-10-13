@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
@@ -50,6 +51,84 @@ _FORWARDING_FIELDS = (
 def _forwarding_state(mailbox: dict) -> dict:
     """The forwarding-related subset of a projected mailbox."""
     return {key: mailbox[key] for key in _FORWARDING_FIELDS if key in mailbox}
+
+
+_AUTO_REPLY_FIELDS = {
+    "AutoReplyState": "auto_reply_state",
+    "ExternalAudience": "external_audience",
+    "InternalMessage": "internal_message",
+    "ExternalMessage": "external_message",
+    "StartTime": "start_time",
+    "EndTime": "end_time",
+}
+
+_AUTO_REPLY_STATES = {"Disabled", "Enabled", "Scheduled"}
+_EXTERNAL_AUDIENCES = {"None", "Known", "All"}
+
+
+def _datetime_to_z(value: datetime) -> str:
+    """Render an aware datetime as UTC ISO-8601 with a trailing Z."""
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _normalize_upstream_time(value: object) -> object:
+    """Best-effort: render an upstream auto-reply time as UTC ISO-8601 + Z.
+
+    PRD-20394: the exact wire format `Get-MailboxAutoReplyConfiguration`
+    returns over this server's REST path (as opposed to interactive
+    PowerShell) is not confirmed empirically — see docs/tickets/PRD-20394.md
+    § Tech design, Risks & dependencies #1. This assumes UTC storage and a
+    parseable ISO-8601-like string; a value that does not parse is passed
+    through unchanged rather than raising, since a read path should degrade
+    gracefully on an unexpected shape, not break the whole response.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return _datetime_to_z(parsed)
+
+
+def _parse_offset_datetime(value: str, field_name: str) -> datetime:
+    """Parse a caller-supplied date/time, requiring a timezone offset.
+
+    Raises ExoError(code="invalid_argument") rather than assuming UTC or
+    local time on an unparsable or offset-less value — the ticket requires
+    this to be rejected explicitly, never silently guessed (AC10).
+    """
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ExoError(
+            400,
+            f"{field_name} is not a valid ISO-8601 date/time: '{value}'",
+            code="invalid_argument",
+            retryable=False,
+        ) from exc
+    if parsed.utcoffset() is None:
+        raise ExoError(
+            400,
+            f"{field_name} must include a timezone offset (e.g. '+10:00' or 'Z'); "
+            f"got '{value}'",
+            code="invalid_argument",
+            retryable=False,
+        )
+    return parsed.astimezone(UTC)
+
+
+async def _read_auto_reply(client: ExoClient, identity: str) -> dict | None:
+    records = await client.invoke("Get-MailboxAutoReplyConfiguration", {"Identity": identity})
+    if not records:
+        return None
+    projected = project(records[0], _AUTO_REPLY_FIELDS)
+    for key in ("start_time", "end_time"):
+        if key in projected:
+            projected[key] = _normalize_upstream_time(projected[key])
+    return projected
 
 
 async def _read_mailbox(client: ExoClient, identity: str) -> dict | None:
@@ -307,3 +386,157 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
                 state.get("forwarding_address") or state.get("forwarding_smtp_address")
             )
         return dump_json_capped(result)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+    async def exo_get_auto_reply(
+        identity: Annotated[
+            str,
+            Field(description="Mailbox UPN, primary SMTP address, alias or GUID."),
+        ],
+    ) -> str:
+        """Read a mailbox's automatic-reply (out-of-office) configuration.
+
+        Read-only — no write. Returns state, external audience, both message
+        bodies, and the scheduled start/end. start_time/end_time are always
+        reported as UTC with a trailing Z, regardless of how they were set.
+        """
+        client = client_factory()
+        if client is None:
+            return NO_CREDENTIALS
+
+        try:
+            config = await _read_auto_reply(client, identity)
+        except ExoError as exc:
+            return exc.to_envelope()
+        if config is None:
+            return ExoError(
+                404, f"No mailbox found for '{identity}'", code="not_found"
+            ).to_envelope()
+
+        return dump_json_capped({"identity": identity, **config})
+
+    @mcp.tool(annotations=ToolAnnotations(idempotentHint=True))
+    async def exo_set_auto_reply(
+        identity: Annotated[
+            str,
+            Field(description="Mailbox UPN, primary SMTP address, alias or GUID."),
+        ],
+        auto_reply_state: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "One of Disabled, Enabled, Scheduled. Leave unset to keep the "
+                    "current value."
+                )
+            ),
+        ] = None,
+        external_audience: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "One of None, Known, All. Leave unset to keep the current value."
+                )
+            ),
+        ] = None,
+        internal_message: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Message shown to senders inside the tenant. Pass an empty "
+                    "string to clear it; leave unset to keep the current value."
+                )
+            ),
+        ] = None,
+        external_message: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Message shown to senders outside the tenant. Pass an empty "
+                    "string to clear it; leave unset to keep the current value."
+                )
+            ),
+        ] = None,
+        start_time: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "ISO-8601 date/time with a required timezone offset, e.g. "
+                    "'2026-01-10T09:00:00+10:00'. Converted to UTC before writing. "
+                    "Leave unset to keep the current value."
+                )
+            ),
+        ] = None,
+        end_time: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "ISO-8601 date/time with a required timezone offset. Converted "
+                    "to UTC before writing. Leave unset to keep the current value."
+                )
+            ),
+        ] = None,
+    ) -> str:
+        """Update a mailbox's automatic-reply configuration.
+
+        Only the fields you supply are changed; the rest keep their current
+        value. start_time/end_time must carry a timezone offset (rejected if
+        not) and are converted to UTC before writing. Reads the config back
+        once after writing and returns the persisted result, not an echo.
+        """
+        client = client_factory()
+        if client is None:
+            return NO_CREDENTIALS
+
+        if auto_reply_state is not None and auto_reply_state not in _AUTO_REPLY_STATES:
+            return ExoError(
+                400,
+                f"auto_reply_state must be one of {sorted(_AUTO_REPLY_STATES)}, got "
+                f"'{auto_reply_state}'",
+                code="invalid_argument",
+                retryable=False,
+            ).to_envelope()
+        if external_audience is not None and external_audience not in _EXTERNAL_AUDIENCES:
+            return ExoError(
+                400,
+                f"external_audience must be one of {sorted(_EXTERNAL_AUDIENCES)}, got "
+                f"'{external_audience}'",
+                code="invalid_argument",
+                retryable=False,
+            ).to_envelope()
+
+        try:
+            parsed_start = (
+                _parse_offset_datetime(start_time, "start_time")
+                if start_time is not None
+                else None
+            )
+            parsed_end = (
+                _parse_offset_datetime(end_time, "end_time") if end_time is not None else None
+            )
+        except ExoError as exc:
+            return exc.to_envelope()
+
+        parameters = {
+            "Identity": identity,
+            "AutoReplyState": auto_reply_state,
+            "ExternalAudience": external_audience,
+            "InternalMessage": internal_message,
+            "ExternalMessage": external_message,
+            "StartTime": _datetime_to_z(parsed_start) if parsed_start is not None else None,
+            "EndTime": _datetime_to_z(parsed_end) if parsed_end is not None else None,
+        }
+        try:
+            await client.invoke("Set-MailboxAutoReplyConfiguration", parameters)
+        except ExoError as exc:
+            return exc.to_envelope()
+
+        try:
+            config = await _read_auto_reply(client, identity)
+        except ExoError:
+            config = None
+        if config is None:
+            # The write itself succeeded; only the read-back failed.
+            return dump_json_capped(
+                {"identity": identity, "write_succeeded": True, "verified": False}
+            )
+        return dump_json_capped({"identity": identity, **config})

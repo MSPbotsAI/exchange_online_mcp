@@ -34,7 +34,10 @@ POST https://outlook.office365.com/adminapi/beta/{tenant}/InvokeCommand
 | `exo_convert_mailbox_to_shared(identity)` | write, destructive. `Set-Mailbox -Type Shared`, then reads the mailbox back to confirm |
 | `exo_set_mailbox_hidden(identity, hidden)` | write, idempotent, reversible |
 | `exo_set_mailbox_forwarding(identity, forward_to=None, deliver_and_forward=True)` | write, idempotent, reversible. Forwards to a recipient **inside the tenant** only (`ForwardingAddress`); omit `forward_to` to switch forwarding off, which also clears any external `ForwardingSmtpAddress` set elsewhere. Reports `previous_forwarding` |
+| `exo_add_distribution_group_member(group, member, bypass_security_group_manager_check=True)` | write, idempotent. Repeating an add for an existing member reports `already_member` instead of failing. Rejects dynamic distribution groups, on-premises-synchronized groups and Microsoft 365 Groups with a distinct named error each — none of those can be managed through this tool |
 | `exo_remove_distribution_group_member(group, member, bypass_security_group_manager_check=True)` | write, destructive. One named member per call — no bulk removal |
+| `exo_get_auto_reply(identity)` | read-only. Returns the mailbox's automatic-reply state, audience, both message bodies, and the scheduled window. `start_time`/`end_time` are always UTC with a trailing `Z` |
+| `exo_set_auto_reply(identity, auto_reply_state=None, external_audience=None, internal_message=None, external_message=None, start_time=None, end_time=None)` | write, idempotent. Only supplied fields change — unsupplied fields keep their current value. `start_time`/`end_time` require a timezone offset and are converted to UTC before writing; reads the configuration back once after writing and returns the persisted result |
 | `exo_list_mobile_devices(mailbox, limit=50)` | read-only. `limit` 1–200, results truncated with `has_more` |
 | `exo_remove_mobile_device(device_id)` | write, destructive. Removes the mailbox partnership only — it does **not** wipe data on the handset |
 
@@ -125,7 +128,10 @@ Tools never raise; they return a JSON envelope as their string result:
 ```
 
 `code` is one of `not_configured`, `unauthorized`, `not_found`, `invalid_argument`,
-`rate_limited`, `upstream_error`. Exchange reports a missing recipient or device as a
+`rate_limited`, `upstream_error`, `dynamic_group_unsupported`,
+`directory_synced_group_unsupported`, `microsoft_365_group_unsupported`. The last three
+are returned only by `exo_add_distribution_group_member`, for the three group types it
+cannot manage. Exchange reports a missing recipient or device as a
 `400` carrying a cmdlet exception; those are normalised to `not_found`. An empty list is
 a successful empty result, never `not_found`.
 
@@ -152,7 +158,7 @@ uv run python -m exo_mcp
 ## Tests
 
 ```bash
-uv run pytest                                   # 50 unit tests, no network
+uv run pytest                                   # 84 unit tests, no network
 docker build --platform linux/amd64 -t exchange-online-mcp:dev .
 uv run python tests/mock_e2e/run_e2e.py         # real container, mocked Entra + Exchange
 ```
@@ -160,7 +166,7 @@ uv run python tests/mock_e2e/run_e2e.py         # real container, mocked Entra +
 `tests/mock_e2e/` runs the built image against a local stand-in for Entra ID and the
 admin endpoint: it generates a throwaway certificate, verifies the client assertion the
 container signs (RS256, `x5t`, audience), and drives
-`401 → initialize → tools/list → tools/call` for all seven tools. No customer tenant
+`401 → initialize → tools/list → tools/call` for all ten tools. No customer tenant
 required.
 
 ## Delivery checklist (SOP §14 self-assessment)
@@ -195,7 +201,7 @@ Container and deliverables
 - [x] Credential header table present (above)
 
 Agent-facing design
-- [x] 7 tools, modelled on the offboarding flow rather than on endpoints
+- [x] 10 tools, modelled on the offboarding flow rather than on endpoints
 - [x] Every description ≤ 500 chars (longest 404), first line ≤ 100 chars
 - [x] Service-level `instructions` provided (1027 chars)
 - [x] Tools self-describing; required/optional parameters explicit
