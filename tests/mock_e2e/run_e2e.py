@@ -192,14 +192,20 @@ def main() -> int:
         tools = rpc_result(body)["result"]["tools"]
         names = sorted(tool["name"] for tool in tools)
         check(
-            "7 exo_ tools listed",
+            "13 exo_ tools listed",
             names
             == [
+                "exo_add_mailbox_permission",
+                "exo_add_recipient_permission",
                 "exo_convert_mailbox_to_shared",
                 "exo_get_mailbox",
+                "exo_get_mailbox_permission",
+                "exo_get_recipient_permission",
                 "exo_list_mobile_devices",
                 "exo_remove_distribution_group_member",
+                "exo_remove_mailbox_permission",
                 "exo_remove_mobile_device",
+                "exo_remove_recipient_permission",
                 "exo_set_mailbox_forwarding",
                 "exo_set_mailbox_hidden",
             ],
@@ -227,6 +233,24 @@ def main() -> int:
             (
                 "exo_remove_mobile_device",
                 {"device_id": "11111111-0000-0000-0000-000000000000"},
+            ),
+            (
+                "exo_add_mailbox_permission",
+                {"identity": "alice@contoso.com", "user": "bob@contoso.com"},
+            ),
+            ("exo_get_mailbox_permission", {"identity": "alice@contoso.com"}),
+            (
+                "exo_remove_mailbox_permission",
+                {"identity": "alice@contoso.com", "user": "bob@contoso.com"},
+            ),
+            (
+                "exo_add_recipient_permission",
+                {"identity": "alice@contoso.com", "trustee": "bob@contoso.com"},
+            ),
+            ("exo_get_recipient_permission", {"identity": "alice@contoso.com"}),
+            (
+                "exo_remove_recipient_permission",
+                {"identity": "alice@contoso.com", "trustee": "bob@contoso.com"},
             ),
         ]
         for index, (name, arguments) in enumerate(calls, start=3):
@@ -278,6 +302,12 @@ def main() -> int:
                 "Remove-DistributionGroupMember",
                 "Get-MobileDevice",
                 "Remove-MobileDevice",
+                "Add-MailboxPermission",
+                "Get-MailboxPermission",
+                "Remove-MailboxPermission",
+                "Add-RecipientPermission",
+                "Get-RecipientPermission",
+                "Remove-RecipientPermission",
             ],
             ", ".join(cmdlets),
         )

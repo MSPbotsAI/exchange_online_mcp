@@ -1,9 +1,12 @@
 """Tool-layer behaviour: field projection, the shared-mailbox gate, truncation
 and the exact cmdlet parameters each write tool sends."""
 
-import pytest
-from conftest import tool_json
+import asyncio
 
+import pytest
+from conftest import CLIENT_ID, TENANT, tool_json
+
+from exo_mcp.auth import ExoCredentials
 from exo_mcp.config import Settings
 from exo_mcp.server import _credentials_var, create_mcp_server
 
@@ -393,3 +396,371 @@ async def test_forwarding_an_unknown_mailbox_does_not_write(mcp, upstream, crede
 
     assert result["error"]["code"] == "not_found"
     assert not [r for r in upstream.invoke_requests if r["cmdlet"] == "Set-Mailbox"]
+
+
+# PRD-20387: mailbox/recipient permission tools.
+
+MAILBOX_PERMISSION_RECORDS = [
+    {
+        "Identity": "contoso.onmicrosoft.com/Users/alice",
+        "User": "NT AUTHORITY\\SELF",
+        "AccessRights": ["FullAccess"],
+        "Deny": False,
+        "IsInherited": False,
+    },
+    {
+        "Identity": "contoso.onmicrosoft.com/Users/alice",
+        "User": "bob@contoso.com",
+        "AccessRights": ["FullAccess"],
+        "Deny": False,
+        "IsInherited": False,
+    },
+    {
+        "Identity": "contoso.onmicrosoft.com/Users/alice",
+        "User": "carol@contoso.com",
+        "AccessRights": ["FullAccess"],
+        "Deny": False,
+        "IsInherited": False,
+    },
+]
+
+RECIPIENT_PERMISSION_RECORD = {
+    "Identity": "contoso.onmicrosoft.com/Users/alice",
+    "Trustee": "bob@contoso.com",
+    "AccessControlType": "Allow",
+    "AccessRights": ["SendAs"],
+    "IsInherited": False,
+}
+
+NOT_FOUND_ERROR = (
+    400,
+    {
+        "error": {
+            "message": "Error executing cmdlet",
+            "details": [
+                {
+                    "message": "The operation couldn't be performed because object "
+                    "'ghost@contoso.com' couldn't be found."
+                }
+            ],
+        }
+    },
+)
+
+
+@pytest.mark.asyncio
+async def test_add_mailbox_permission_grants_full_access(mcp, upstream, credentials):
+    upstream.responses["Add-MailboxPermission"] = []
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_mailbox_permission",
+        {"identity": "alice@contoso.com", "user": "bob@contoso.com"},
+    )
+
+    assert result == {
+        "identity": "alice@contoso.com",
+        "user": "bob@contoso.com",
+        "access_rights": ["FullAccess"],
+        "granted": True,
+    }
+    assert upstream.invoke_requests[0]["cmdlet"] == "Add-MailboxPermission"
+    assert upstream.invoke_requests[0]["parameters"] == {
+        "Identity": "alice@contoso.com",
+        "User": "bob@contoso.com",
+        "AccessRights": ["FullAccess"],
+        "AutoMapping": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_add_mailbox_permission_sends_auto_mapping_false(mcp, upstream, credentials):
+    upstream.responses["Add-MailboxPermission"] = []
+
+    await call(
+        mcp,
+        credentials,
+        "exo_add_mailbox_permission",
+        {"identity": "alice@contoso.com", "user": "bob@contoso.com", "auto_mapping": False},
+    )
+
+    assert upstream.invoke_requests[0]["parameters"]["AutoMapping"] is False
+
+
+@pytest.mark.asyncio
+async def test_remove_mailbox_permission_revokes_full_access(mcp, upstream, credentials):
+    upstream.responses["Remove-MailboxPermission"] = []
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_remove_mailbox_permission",
+        {"identity": "alice@contoso.com", "user": "bob@contoso.com"},
+    )
+
+    assert result == {
+        "identity": "alice@contoso.com",
+        "user": "bob@contoso.com",
+        "access_rights": ["FullAccess"],
+        "removed": True,
+    }
+    assert upstream.invoke_requests[0]["parameters"] == {
+        "Identity": "alice@contoso.com",
+        "User": "bob@contoso.com",
+        "AccessRights": ["FullAccess"],
+        "Confirm": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_add_recipient_permission_grants_send_as(mcp, upstream, credentials):
+    upstream.responses["Add-RecipientPermission"] = []
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_recipient_permission",
+        {"identity": "alice@contoso.com", "trustee": "bob@contoso.com"},
+    )
+
+    assert result == {
+        "identity": "alice@contoso.com",
+        "trustee": "bob@contoso.com",
+        "access_rights": ["SendAs"],
+        "granted": True,
+    }
+    assert upstream.invoke_requests[0]["parameters"] == {
+        "Identity": "alice@contoso.com",
+        "Trustee": "bob@contoso.com",
+        "AccessRights": ["SendAs"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_remove_recipient_permission_revokes_send_as(mcp, upstream, credentials):
+    upstream.responses["Remove-RecipientPermission"] = []
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_remove_recipient_permission",
+        {"identity": "alice@contoso.com", "trustee": "bob@contoso.com"},
+    )
+
+    assert result == {
+        "identity": "alice@contoso.com",
+        "trustee": "bob@contoso.com",
+        "access_rights": ["SendAs"],
+        "removed": True,
+    }
+    assert upstream.invoke_requests[0]["parameters"] == {
+        "Identity": "alice@contoso.com",
+        "Trustee": "bob@contoso.com",
+        "AccessRights": ["SendAs"],
+        "Confirm": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_mailbox_permission_lists_trustees_excluding_self(mcp, upstream, credentials):
+    upstream.responses["Get-MailboxPermission"] = MAILBOX_PERMISSION_RECORDS
+
+    result = await call(
+        mcp, credentials, "exo_get_mailbox_permission", {"identity": "alice@contoso.com"}
+    )
+
+    assert [t["user"] for t in result["trustees"]] == ["bob@contoso.com", "carol@contoso.com"]
+    assert upstream.invoke_requests[0]["parameters"] == {"Identity": "alice@contoso.com"}
+
+
+@pytest.mark.asyncio
+async def test_get_mailbox_permission_filters_by_user(mcp, upstream, credentials):
+    upstream.responses["Get-MailboxPermission"] = [MAILBOX_PERMISSION_RECORDS[1]]
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_get_mailbox_permission",
+        {"identity": "alice@contoso.com", "user": "bob@contoso.com"},
+    )
+
+    assert [t["user"] for t in result["trustees"]] == ["bob@contoso.com"]
+    assert upstream.invoke_requests[0]["parameters"] == {
+        "Identity": "alice@contoso.com",
+        "User": "bob@contoso.com",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_mailbox_permission_empty_when_no_grant(mcp, upstream, credentials):
+    upstream.responses["Get-MailboxPermission"] = []
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_get_mailbox_permission",
+        {"identity": "alice@contoso.com", "user": "dave@contoso.com"},
+    )
+
+    assert result == {"identity": "alice@contoso.com", "trustees": []}
+
+
+@pytest.mark.asyncio
+async def test_get_recipient_permission_lists_trustees(mcp, upstream, credentials):
+    upstream.responses["Get-RecipientPermission"] = [RECIPIENT_PERMISSION_RECORD]
+
+    result = await call(
+        mcp, credentials, "exo_get_recipient_permission", {"identity": "alice@contoso.com"}
+    )
+
+    assert result["trustees"] == [
+        {
+            "identity": "contoso.onmicrosoft.com/Users/alice",
+            "trustee": "bob@contoso.com",
+            "access_control_type": "Allow",
+            "access_rights": ["SendAs"],
+            "is_inherited": False,
+        }
+    ]
+    assert upstream.invoke_requests[0]["parameters"] == {"Identity": "alice@contoso.com"}
+
+
+@pytest.mark.asyncio
+async def test_get_recipient_permission_filters_by_trustee(mcp, upstream, credentials):
+    upstream.responses["Get-RecipientPermission"] = [RECIPIENT_PERMISSION_RECORD]
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_get_recipient_permission",
+        {"identity": "alice@contoso.com", "trustee": "bob@contoso.com"},
+    )
+
+    assert [t["trustee"] for t in result["trustees"]] == ["bob@contoso.com"]
+    assert upstream.invoke_requests[0]["parameters"] == {
+        "Identity": "alice@contoso.com",
+        "Trustee": "bob@contoso.com",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_name,args,cmdlet",
+    [
+        (
+            "exo_add_mailbox_permission",
+            {"identity": "ghost@contoso.com", "user": "bob@contoso.com"},
+            "Add-MailboxPermission",
+        ),
+        (
+            "exo_remove_mailbox_permission",
+            {"identity": "ghost@contoso.com", "user": "bob@contoso.com"},
+            "Remove-MailboxPermission",
+        ),
+        (
+            "exo_add_recipient_permission",
+            {"identity": "ghost@contoso.com", "trustee": "bob@contoso.com"},
+            "Add-RecipientPermission",
+        ),
+        (
+            "exo_remove_recipient_permission",
+            {"identity": "ghost@contoso.com", "trustee": "bob@contoso.com"},
+            "Remove-RecipientPermission",
+        ),
+        (
+            "exo_get_mailbox_permission",
+            {"identity": "ghost@contoso.com"},
+            "Get-MailboxPermission",
+        ),
+        (
+            "exo_get_recipient_permission",
+            {"identity": "ghost@contoso.com"},
+            "Get-RecipientPermission",
+        ),
+    ],
+)
+async def test_permission_tools_return_not_found_for_unresolved_identity(
+    mcp, upstream, credentials, tool_name, args, cmdlet
+):
+    upstream.cmdlet_errors[cmdlet] = NOT_FOUND_ERROR
+
+    result = await call(mcp, credentials, tool_name, args)
+
+    assert result["error"]["code"] == "not_found"
+    assert result["error"]["retryable"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_name,args,cmdlet",
+    [
+        (
+            "exo_add_mailbox_permission",
+            {"identity": "alice@contoso.com", "user": "ghost@contoso.com"},
+            "Add-MailboxPermission",
+        ),
+        (
+            "exo_add_recipient_permission",
+            {"identity": "alice@contoso.com", "trustee": "ghost@contoso.com"},
+            "Add-RecipientPermission",
+        ),
+    ],
+)
+async def test_add_permission_tools_return_not_found_for_unresolved_trustee(
+    mcp, upstream, credentials, tool_name, args, cmdlet
+):
+    upstream.cmdlet_errors[cmdlet] = NOT_FOUND_ERROR
+
+    result = await call(mcp, credentials, tool_name, args)
+
+    assert result["error"]["code"] == "not_found"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_name,args",
+    [
+        ("exo_add_mailbox_permission", {"identity": "a", "user": "b"}),
+        ("exo_remove_mailbox_permission", {"identity": "a", "user": "b"}),
+        ("exo_add_recipient_permission", {"identity": "a", "trustee": "b"}),
+        ("exo_remove_recipient_permission", {"identity": "a", "trustee": "b"}),
+        ("exo_get_mailbox_permission", {"identity": "a"}),
+        ("exo_get_recipient_permission", {"identity": "a"}),
+    ],
+)
+async def test_permission_tools_without_credentials_return_not_configured(
+    mcp, tool_name, args
+):
+    # No contextvar set -> client_factory() resolves to None, same as the
+    # existing 7 tools outside a request context.
+    result = tool_json(await mcp.call_tool(tool_name, args))
+    assert result["error"]["code"] == "not_configured"
+
+
+@pytest.mark.asyncio
+async def test_permission_tools_isolate_concurrent_tenants(mcp, upstream, credentials):
+    other_credentials = ExoCredentials(
+        tenant_id="fabrikam.onmicrosoft.com",
+        client_id=CLIENT_ID,
+        certificate_b64=credentials.certificate_b64,
+    )
+    upstream.responses["Get-MailboxPermission"] = [MAILBOX_PERMISSION_RECORDS[1]]
+
+    result_a, result_b = await asyncio.gather(
+        call(mcp, credentials, "exo_get_mailbox_permission", {"identity": "alice@contoso.com"}),
+        call(
+            mcp,
+            other_credentials,
+            "exo_get_mailbox_permission",
+            {"identity": "alice@contoso.com"},
+        ),
+    )
+
+    assert "error" not in result_a
+    assert "error" not in result_b
+
+    invoke_urls = {req["url"] for req in upstream.invoke_requests}
+    assert any(f"/{TENANT}/InvokeCommand" in url for url in invoke_urls)
+    assert any("/fabrikam.onmicrosoft.com/InvokeCommand" in url for url in invoke_urls)
+    assert len(invoke_urls) == 2

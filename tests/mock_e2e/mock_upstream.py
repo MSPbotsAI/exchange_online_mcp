@@ -66,6 +66,28 @@ FIXTURES: dict[str, list[dict]] = {
     "Set-Mailbox": [],
     "Remove-DistributionGroupMember": [],
     "Remove-MobileDevice": [],
+    "Add-MailboxPermission": [],
+    "Remove-MailboxPermission": [],
+    "Add-RecipientPermission": [],
+    "Remove-RecipientPermission": [],
+    "Get-MailboxPermission": [
+        {
+            "Identity": "contoso.onmicrosoft.com/Users/alice",
+            "User": "bob@contoso.com",
+            "AccessRights": ["FullAccess"],
+            "Deny": False,
+            "IsInherited": False,
+        }
+    ],
+    "Get-RecipientPermission": [
+        {
+            "Identity": "contoso.onmicrosoft.com/Users/alice",
+            "Trustee": "bob@contoso.com",
+            "AccessControlType": "Allow",
+            "AccessRights": ["SendAs"],
+            "IsInherited": False,
+        }
+    ],
 }
 
 

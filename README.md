@@ -37,6 +37,12 @@ POST https://outlook.office365.com/adminapi/beta/{tenant}/InvokeCommand
 | `exo_remove_distribution_group_member(group, member, bypass_security_group_manager_check=True)` | write, destructive. One named member per call — no bulk removal |
 | `exo_list_mobile_devices(mailbox, limit=50)` | read-only. `limit` 1–200, results truncated with `has_more` |
 | `exo_remove_mobile_device(device_id)` | write, destructive. Removes the mailbox partnership only — it does **not** wipe data on the handset |
+| `exo_add_mailbox_permission(identity, user, auto_mapping=True)` | write. Grants the trustee FullAccess (fixed, not caller-settable). Errors if already granted — check with `exo_get_mailbox_permission` first |
+| `exo_remove_mailbox_permission(identity, user)` | write, destructive. Revokes the trustee's FullAccess (fixed). Errors if not currently granted |
+| `exo_add_recipient_permission(identity, trustee)` | write. Grants the trustee SendAs (fixed, not caller-settable). Errors if already granted — check with `exo_get_recipient_permission` first |
+| `exo_remove_recipient_permission(identity, trustee)` | write, destructive. Revokes the trustee's SendAs (fixed). Errors if not currently granted |
+| `exo_get_mailbox_permission(identity, user=None)` | read-only. Lists trustees holding FullAccess, or narrows to one trustee if `user` is given. Only `FullAccess` grants are reported; the mailbox owner's own implicit self-grant is excluded when listing everyone. Empty list, not an error, when none match |
+| `exo_get_recipient_permission(identity, trustee=None)` | read-only. Lists trustees holding SendAs, or narrows to one trustee if `trustee` is given. Only `SendAs` grants are reported; the mailbox owner's own implicit self-grant is excluded when listing everyone. Empty list, not an error, when none match |
 
 Cmdlet output is projected onto a field whitelist and the `@odata.type` companion keys
 are stripped, so a typical response is under 1.5 KB instead of the ~40 KB a raw

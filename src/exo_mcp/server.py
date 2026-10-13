@@ -125,7 +125,9 @@ def create_mcp_server(settings: Settings) -> FastMCP:
             "the departing person's mail has to keep reaching a colleague; its target must "
             "be a recipient inside the tenant, never an outside address. Removing a mobile "
             "device removes only "
-            "the mailbox association; data already on the handset is not wiped. Every "
+            "the mailbox association; data already on the handset is not wiped. Before "
+            "granting or revoking FullAccess/SendAs, exo_get_mailbox_permission / "
+            "exo_get_recipient_permission show current trustees. Every "
             "tool acts on the one tenant whose app-only certificate is supplied with the "
             "request; there is no cross-tenant access."
         ),
@@ -140,10 +142,11 @@ def create_mcp_server(settings: Settings) -> FastMCP:
     def client_factory() -> ExoClient | None:
         return get_client_from_context(settings)
 
-    from .tools import devices, groups, mailbox
+    from .tools import devices, groups, mailbox, permissions
 
     mailbox.register(mcp, client_factory)
     groups.register(mcp, client_factory)
     devices.register(mcp, client_factory)
+    permissions.register(mcp, client_factory)
 
     return mcp
