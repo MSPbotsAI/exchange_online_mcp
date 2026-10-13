@@ -1,4 +1,3 @@
-import asyncio
 from collections.abc import Callable
 from typing import Annotated
 
@@ -60,37 +59,20 @@ async def _read_mailbox(client: ExoClient, identity: str) -> dict | None:
     return project(records[0], _MAILBOX_FIELDS)
 
 
-# PRD-20321: EXO recipient-directory changes (incl. HiddenFromAddressListsEnabled)
-# are not always visible to an immediately-following read. Bounded retry budget
-# is a placeholder pending real-tenant lag measurement (see design doc Open
-# questions) -- short backoff, few attempts, since this is a low-frequency
-# offboarding tool, not a hot path.
-_HIDDEN_VERIFY_ATTEMPTS = 4
-_HIDDEN_VERIFY_BACKOFF_S = 0.2
-
-
-async def _read_mailbox_until_hidden_matches(
-    client: ExoClient,
-    identity: str,
-    want_hidden: bool,
-    attempts: int = _HIDDEN_VERIFY_ATTEMPTS,
-    backoff_s: float = _HIDDEN_VERIFY_BACKOFF_S,
-) -> tuple[dict | None, int, bool]:
-    """Re-read the mailbox up to `attempts` times, waiting `backoff_s` between
-    reads, until hidden_from_address_lists_enabled matches what was just
-    written. Returns (last mailbox read or None, attempts actually made,
-    whether it matched)."""
-    mailbox: dict | None = None
-    for attempt in range(1, attempts + 1):
-        if attempt > 1:
-            await asyncio.sleep(backoff_s)
-        try:
-            mailbox = await _read_mailbox(client, identity)
-        except ExoError:
-            mailbox = None
-        if mailbox is not None and mailbox.get("hidden_from_address_lists_enabled") == want_hidden:
-            return mailbox, attempt, True
-    return mailbox, attempts, False
+# PRD-20321: a GAL-visibility change reaches other EXO servers through
+# directory replication, which took over a minute in a real tenant and can run
+# to several. A read issued in the same call lands on the server that took the
+# write and echoes the new value at once, so it proves nothing; reads issued
+# later from elsewhere can still show the old value for minutes. The tool
+# therefore reports the write as accepted but unverified and leaves the check to
+# a later exo_get_mailbox.
+_HIDDEN_PENDING_NOTE = (
+    "Exchange Online accepted the change, but it reaches the global address list "
+    "through directory replication, which commonly takes several minutes. Until "
+    "then exo_get_mailbox may still show the previous value. Re-check with "
+    "exo_get_mailbox after about 5 minutes; if it still shows the previous value, "
+    "call this tool again."
+)
 
 
 def _shared_conversion(mailbox: dict, statistics: dict | None) -> dict:
@@ -220,6 +202,9 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
 
         The mailbox stops appearing in the directory but stays reachable at its
         address. Reversible: call again with hidden=false.
+
+        The change takes several minutes to replicate, so the response is
+        never verified: confirm it later with exo_get_mailbox.
         """
         client = client_factory()
         if client is None:
@@ -233,28 +218,15 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
         except ExoError as exc:
             return exc.to_envelope()
 
-        result = {"identity": identity, "hidden_from_address_lists_enabled": hidden}
-        mailbox, attempts, matched = await _read_mailbox_until_hidden_matches(
-            client, identity, hidden
+        return dump_json_capped(
+            {
+                "identity": identity,
+                "requested_hidden": hidden,
+                "write_accepted": True,
+                "verified": False,
+                "note": _HIDDEN_PENDING_NOTE,
+            }
         )
-        if matched:
-            # mailbox is guaranteed non-None here (matched implies a successful read).
-            result["hidden_from_address_lists_enabled"] = mailbox["hidden_from_address_lists_enabled"]  # type: ignore[index]
-        else:
-            # Retry budget exhausted without a matching readback: don't present a
-            # bare value as authoritative (PRD-20321 -- the reporter's exact
-            # complaint was "returns success, but readback still shows visible").
-            if mailbox and "hidden_from_address_lists_enabled" in mailbox:
-                result["hidden_from_address_lists_enabled"] = mailbox[
-                    "hidden_from_address_lists_enabled"
-                ]
-            result["verified"] = False
-            result["attempts"] = attempts
-            result["note"] = (
-                "Readback did not confirm the requested hidden state within the "
-                "retry window; re-check later with exo_get_mailbox."
-            )
-        return dump_json_capped(result)
 
     @mcp.tool(annotations=ToolAnnotations(idempotentHint=True))
     async def exo_set_mailbox_forwarding(

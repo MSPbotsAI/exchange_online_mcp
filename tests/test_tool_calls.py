@@ -150,7 +150,10 @@ async def test_convert_mailbox_to_shared_sets_type_and_verifies(mcp, upstream, c
 
 
 @pytest.mark.asyncio
-async def test_set_mailbox_hidden_reports_the_read_back_value(mcp, upstream, credentials):
+async def test_set_mailbox_hidden_reports_pending_not_verified(mcp, upstream, credentials):
+    """PRD-20321: a same-call read hits the server that took the write and
+    echoes the new value, while other servers lag by minutes. The tool must
+    not present any readback as confirmation."""
     upstream.responses["Set-Mailbox"] = []
     upstream.responses["Get-Mailbox"] = [
         {**MAILBOX_RECORD, "HiddenFromAddressListsEnabled": True}
@@ -163,96 +166,39 @@ async def test_set_mailbox_hidden_reports_the_read_back_value(mcp, upstream, cre
         {"identity": "alice@contoso.com", "hidden": True},
     )
 
-    assert result["hidden_from_address_lists_enabled"] is True
+    assert result["requested_hidden"] is True
+    assert result["write_accepted"] is True
+    assert result["verified"] is False
+    assert "exo_get_mailbox" in result["note"]
+    assert "hidden_from_address_lists_enabled" not in result
     assert upstream.invoke_requests[0]["parameters"] == {
         "Identity": "alice@contoso.com",
         "HiddenFromAddressListsEnabled": True,
     }
-
-
-class _FlipAfterNReads:
-    """dict.get() stand-in for `upstream.responses`: returns `before` for a
-    cmdlet's first `flip_at - 1` reads, then `after` from the `flip_at`th
-    read onward. Lets a test simulate EXO's write/readback propagation lag
-    (PRD-20321) without touching conftest.py's Upstream, which only supports
-    one fixed response per cmdlet for the whole test."""
-
-    def __init__(self, cmdlet: str, before: list, after: list, flip_at: int):
-        self._cmdlet, self._before, self._after, self._flip_at = cmdlet, before, after, flip_at
-        self.reads = 0
-
-    def get(self, cmdlet: str, default=None):
-        if cmdlet != self._cmdlet:
-            return default
-        self.reads += 1
-        return self._after if self.reads >= self._flip_at else self._before
+    assert all(r["cmdlet"] != "Get-Mailbox" for r in upstream.invoke_requests)
 
 
 @pytest.mark.asyncio
-async def test_set_mailbox_hidden_confirms_on_first_readback(mcp, upstream, credentials):
-    """PRD-20321 / TC-EXO-001: correct on the first attempt -> no verified:false,
-    no retry-only fields leak into the happy path."""
+async def test_set_mailbox_hidden_unhide_is_also_unverified(mcp, upstream, credentials):
     upstream.responses["Set-Mailbox"] = []
-    upstream.responses["Get-Mailbox"] = [
-        {**MAILBOX_RECORD, "HiddenFromAddressListsEnabled": True}
-    ]
 
     result = await call(
-        mcp, credentials, "exo_set_mailbox_hidden", {"identity": "alice@contoso.com", "hidden": True}
+        mcp,
+        credentials,
+        "exo_set_mailbox_hidden",
+        {"identity": "alice@contoso.com", "hidden": False},
     )
 
-    assert result["hidden_from_address_lists_enabled"] is True
-    assert "verified" not in result
-    assert "attempts" not in result
-    # Exactly one read -- the happy path must not pay the retry-loop's sleep cost.
-    assert sum(1 for r in upstream.invoke_requests if r["cmdlet"] == "Get-Mailbox") == 1
-
-
-@pytest.mark.asyncio
-async def test_set_mailbox_hidden_retries_until_readback_matches(mcp, upstream, credentials):
-    """PRD-20321 / TC-EXO-002: readback is stale for the first N-1 attempts and
-    correct on the last -- the tool must retry rather than give up after one read."""
-    upstream.responses["Set-Mailbox"] = []
-    upstream.responses = _FlipAfterNReads(
-        "Get-Mailbox",
-        before=[{**MAILBOX_RECORD, "HiddenFromAddressListsEnabled": False}],
-        after=[{**MAILBOX_RECORD, "HiddenFromAddressListsEnabled": True}],
-        flip_at=3,
-    )
-
-    result = await call(
-        mcp, credentials, "exo_set_mailbox_hidden", {"identity": "alice@contoso.com", "hidden": True}
-    )
-
-    assert result["hidden_from_address_lists_enabled"] is True
-    assert "verified" not in result
-
-
-@pytest.mark.asyncio
-async def test_set_mailbox_hidden_reports_unverified_after_retry_budget(mcp, upstream, credentials):
-    """PRD-20321 / TC-EXO-003: readback never matches within the retry budget --
-    the response must flag verified:false rather than present the stale value
-    as authoritative (the exact bug the reporter hit)."""
-    upstream.responses["Set-Mailbox"] = []
-    upstream.responses["Get-Mailbox"] = [
-        {**MAILBOX_RECORD, "HiddenFromAddressListsEnabled": False}
-    ]
-
-    result = await call(
-        mcp, credentials, "exo_set_mailbox_hidden", {"identity": "alice@contoso.com", "hidden": True}
-    )
-
+    assert result["requested_hidden"] is False
     assert result["verified"] is False
-    assert result["hidden_from_address_lists_enabled"] is False
-    assert result["attempts"] > 1
-    assert "note" in result
+    assert upstream.invoke_requests[0]["parameters"]["HiddenFromAddressListsEnabled"] is False
 
 
 @pytest.mark.asyncio
 async def test_set_mailbox_hidden_reports_not_found(mcp, upstream, credentials):
     """PRD-20321 / TC-EXO-004 (regression guard): an identity that resolves to no
     mailbox must still fail at the write step with the existing 404-equivalent
-    ExoError behaviour, unchanged by the new readback retry loop."""
+    ExoError behaviour."""
     upstream.cmdlet_errors["Set-Mailbox"] = (
         404,
         {"error": {"message": "Couldn't find object \"ghost@contoso.com\"."}},
@@ -264,7 +210,6 @@ async def test_set_mailbox_hidden_reports_not_found(mcp, upstream, credentials):
 
     assert result["error"]["code"] == "not_found"
     assert result["error"]["retryable"] is False
-    # The write failed outright -- no readback attempt should have been made.
     assert all(r["cmdlet"] != "Get-Mailbox" for r in upstream.invoke_requests)
 
 
