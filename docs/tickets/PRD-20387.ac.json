@@ -1,0 +1,114 @@
+[
+  {
+    "id": "TC-EXO-001",
+    "ac": "AC1",
+    "text": "Given a valid mailbox identity and trustee, When exo_add_mailbox_permission(identity, user) is called, Then the trustee is granted FullAccess and the response names the mailbox, the user and FullAccess",
+    "type": "auto",
+    "tests": ["tests/test_tool_calls.py::test_add_mailbox_permission_grants_full_access"]
+  },
+  {
+    "id": "TC-EXO-002",
+    "ac": "AC2",
+    "text": "Given exo_add_mailbox_permission is called with auto_mapping=False, When the grant succeeds, Then the request sent to Exchange carries AutoMapping=false",
+    "type": "auto",
+    "tests": ["tests/test_tool_calls.py::test_add_mailbox_permission_sends_auto_mapping_false"]
+  },
+  {
+    "id": "TC-EXO-003",
+    "ac": "AC3",
+    "text": "Given a mailbox identity and a trustee currently holding FullAccess, When exo_remove_mailbox_permission(identity, user) is called, Then the trustee's FullAccess is revoked and the response names the mailbox and the user",
+    "type": "auto",
+    "tests": ["tests/test_tool_calls.py::test_remove_mailbox_permission_revokes_full_access"]
+  },
+  {
+    "id": "TC-EXO-004",
+    "ac": "AC4",
+    "text": "Given a valid mailbox identity and trustee, When exo_add_recipient_permission(identity, trustee) is called, Then the trustee is granted SendAs and the response names the mailbox, the trustee and SendAs",
+    "type": "auto",
+    "tests": ["tests/test_tool_calls.py::test_add_recipient_permission_grants_send_as"]
+  },
+  {
+    "id": "TC-EXO-005",
+    "ac": "AC5",
+    "text": "Given a mailbox identity and a trustee currently holding SendAs, When exo_remove_recipient_permission(identity, trustee) is called, Then the trustee's SendAs is revoked and the response names the mailbox and the trustee",
+    "type": "auto",
+    "tests": ["tests/test_tool_calls.py::test_remove_recipient_permission_revokes_send_as"]
+  },
+  {
+    "id": "TC-EXO-006",
+    "ac": "AC6",
+    "text": "Given a mailbox with 2 trustees holding FullAccess plus the implicit NT AUTHORITY\\SELF grant, When exo_get_mailbox_permission(identity) is called without user, Then the response lists exactly those 2 trustees and excludes SELF",
+    "type": "auto",
+    "tests": ["tests/test_tool_calls.py::test_get_mailbox_permission_lists_trustees_excluding_self"]
+  },
+  {
+    "id": "TC-EXO-007",
+    "ac": "AC7",
+    "text": "Given a mailbox and a specific trustee holding FullAccess, When exo_get_mailbox_permission(identity, user=<trustee>) is called, Then the response contains only that trustee's entry",
+    "type": "auto",
+    "tests": ["tests/test_tool_calls.py::test_get_mailbox_permission_filters_by_user"]
+  },
+  {
+    "id": "TC-EXO-008",
+    "ac": "AC7",
+    "text": "Given a mailbox and a trustee with no FullAccess grant, When exo_get_mailbox_permission(identity, user=<that trustee>) is called, Then the response is an empty list, not an error",
+    "type": "auto",
+    "tests": ["tests/test_tool_calls.py::test_get_mailbox_permission_empty_when_no_grant"]
+  },
+  {
+    "id": "TC-EXO-009",
+    "ac": "AC8",
+    "text": "Given a mailbox with 1 trustee holding SendAs, When exo_get_recipient_permission(identity) is called without trustee, Then the response lists that trustee",
+    "type": "auto",
+    "tests": ["tests/test_tool_calls.py::test_get_recipient_permission_lists_trustees"]
+  },
+  {
+    "id": "TC-EXO-010",
+    "ac": "AC9",
+    "text": "Given a mailbox and a specific trustee holding SendAs, When exo_get_recipient_permission(identity, trustee=<trustee>) is called, Then the response contains only that trustee's entry",
+    "type": "auto",
+    "tests": ["tests/test_tool_calls.py::test_get_recipient_permission_filters_by_trustee"]
+  },
+  {
+    "id": "TC-EXO-011",
+    "ac": "AC10",
+    "text": "Given an identity that does not resolve to a real mailbox, When any of the 6 tools is called, Then the response is {\"error\":{\"code\":\"not_found\",...}}, not a raised exception",
+    "type": "auto",
+    "tests": ["tests/test_tool_calls.py::test_permission_tools_return_not_found_for_unresolved_identity"]
+  },
+  {
+    "id": "TC-EXO-012",
+    "ac": "AC10",
+    "text": "Given a user/trustee that does not resolve to a real recipient, When exo_add_mailbox_permission or exo_add_recipient_permission is called, Then the response is the same not_found envelope",
+    "type": "auto",
+    "tests": ["tests/test_tool_calls.py::test_add_permission_tools_return_not_found_for_unresolved_trustee"]
+  },
+  {
+    "id": "TC-EXO-013",
+    "ac": "AC11",
+    "text": "Given no Exchange Online credentials are present on the request, When any of the 6 tools is called, Then the response is the existing NO_CREDENTIALS envelope",
+    "type": "auto",
+    "tests": ["tests/test_tool_calls.py::test_permission_tools_without_credentials_return_not_configured"]
+  },
+  {
+    "id": "TC-EXO-014",
+    "ac": "AC12",
+    "text": "Given two concurrent requests carrying two different tenants' credentials, When any of the 6 tools runs for each, Then each call is routed to its own tenant's admin endpoint and neither response leaks the other tenant's data",
+    "type": "auto",
+    "tests": ["tests/test_tool_calls.py::test_permission_tools_isolate_concurrent_tenants"]
+  },
+  {
+    "id": "TC-EXO-015",
+    "ac": "AC13",
+    "text": "Given this connector is already connected on the platform, When the 6 new tools are deployed and an operator presses Refresh Tools on the connector detail page, Then all 6 appear in the per-connector tool list with name and one-line description, with no other platform-side change",
+    "type": "manual",
+    "steps": [
+      "Deploy the rebuilt exchange_online_mcp container with permissions.py included",
+      "In the platform UI, open the already-connected Exchange Online connector's detail page",
+      "Press Refresh Tools"
+    ],
+    "expect": "The tool list grows from 7 to 13 rows; the 6 new rows are exo_add_mailbox_permission, exo_remove_mailbox_permission, exo_add_recipient_permission, exo_remove_recipient_permission, exo_get_mailbox_permission, exo_get_recipient_permission, each with an Available badge; no other page or setting needed to be touched",
+    "result": "untested",
+    "notes": "Blocked on a deployed instance with a connected Exchange Online connector; not executable from the design flow (no EXO tenant reachable). Dev leg to execute once deployed, or record as a deliberate manual-only gap if no such environment exists at dev time."
+  }
+]
