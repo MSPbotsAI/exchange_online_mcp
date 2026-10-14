@@ -807,3 +807,134 @@ async def test_permission_tools_isolate_concurrent_tenants(mcp, upstream, creden
     assert any(f"/{TENANT}/InvokeCommand" in url for url in invoke_urls)
     assert any("/fabrikam.onmicrosoft.com/InvokeCommand" in url for url in invoke_urls)
     assert len(invoke_urls) == 2
+
+
+# ---------------------------------------------------------------------------
+# PRD-20480: exo_add_sendonbehalf_permission, exo_add_email_alias
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_sendonbehalf_permission_grants_delegate(mcp, upstream, credentials):
+    """TC-EXO-001/AC3: grants SendOnBehalf via an additive Set-Mailbox call,
+    and the response is reported unverified pending EXO replication."""
+    upstream.responses["Set-Mailbox"] = []
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_sendonbehalf_permission",
+        {"identity": "shared@contoso.com", "delegate": "bob@contoso.com"},
+    )
+
+    assert result["identity"] == "shared@contoso.com"
+    assert result["delegate"] == "bob@contoso.com"
+    assert result["granted"] is True
+    assert result["verified"] is False
+    assert "exo_get_mailbox" in result["note"]
+    assert upstream.invoke_requests[0]["cmdlet"] == "Set-Mailbox"
+    assert upstream.invoke_requests[0]["parameters"] == {
+        "Identity": "shared@contoso.com",
+        "GrantSendOnBehalfTo": {"Add": ["bob@contoso.com"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_add_sendonbehalf_permission_not_found(mcp, upstream, credentials):
+    upstream.cmdlet_errors["Set-Mailbox"] = NOT_FOUND_ERROR
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_sendonbehalf_permission",
+        {"identity": "ghost@contoso.com", "delegate": "bob@contoso.com"},
+    )
+
+    assert result["error"]["code"] == "not_found"
+    assert result["error"]["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_add_email_alias_adds_multiple_without_disturbing_existing(
+    mcp, upstream, credentials
+):
+    """TC-EXO-002/AC4: two new alias addresses in one call must both be sent
+    as an additive Add (never a full replace of EmailAddresses)."""
+    upstream.responses["Set-Mailbox"] = []
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_email_alias",
+        {
+            "identity": "alice@contoso.com",
+            "aliases": ["old-name@contoso.com", "alias2@contoso.com"],
+        },
+    )
+
+    assert result["identity"] == "alice@contoso.com"
+    assert result["aliases_requested"] == ["old-name@contoso.com", "alias2@contoso.com"]
+    assert result["accepted"] is True
+    assert result["verified"] is False
+    assert upstream.invoke_requests[0]["cmdlet"] == "Set-Mailbox"
+    assert upstream.invoke_requests[0]["parameters"] == {
+        "Identity": "alice@contoso.com",
+        "EmailAddresses": {"Add": ["smtp:old-name@contoso.com", "smtp:alias2@contoso.com"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_add_email_alias_rejects_address_in_use_elsewhere(mcp, upstream, credentials):
+    """TC-EXO-003/AC5: an alias already assigned to a different recipient must
+    surface Exchange's rejection, not be silently dropped."""
+    upstream.cmdlet_errors["Set-Mailbox"] = (
+        400,
+        {
+            "error": {
+                "message": "Error executing cmdlet",
+                "details": [
+                    {
+                        "message": 'The proxy address "smtp:taken@contoso.com" is already '
+                        'being used by the recipient "bob@contoso.com". Please choose '
+                        "another proxy address."
+                    }
+                ],
+            }
+        },
+    )
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_email_alias",
+        {"identity": "alice@contoso.com", "aliases": ["taken@contoso.com"]},
+    )
+
+    assert result["error"]["code"] == "invalid_argument"
+    assert "taken@contoso.com" in result["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_add_email_alias_rejects_empty_list_without_calling_exchange(
+    mcp, upstream, credentials
+):
+    result = await call(
+        mcp, credentials, "exo_add_email_alias", {"identity": "alice@contoso.com", "aliases": []}
+    )
+
+    assert result["error"]["code"] == "invalid_argument"
+    assert upstream.invoke_requests == []
+
+
+@pytest.mark.asyncio
+async def test_add_email_alias_not_found(mcp, upstream, credentials):
+    upstream.cmdlet_errors["Set-Mailbox"] = NOT_FOUND_ERROR
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_email_alias",
+        {"identity": "ghost@contoso.com", "aliases": ["x@contoso.com"]},
+    )
+
+    assert result["error"]["code"] == "not_found"

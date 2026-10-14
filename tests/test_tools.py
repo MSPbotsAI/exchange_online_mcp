@@ -24,6 +24,8 @@ EXPECTED_TOOLS = {
     "exo_remove_mobile_device": {"device_id"},
     "exo_add_mailbox_permission": {"identity", "user"},
     "exo_remove_mailbox_permission": {"identity", "user"},
+    "exo_add_sendonbehalf_permission": {"identity", "delegate"},
+    "exo_add_email_alias": {"identity", "aliases"},
     "exo_add_recipient_permission": {"identity", "trustee"},
     "exo_remove_recipient_permission": {"identity", "trustee"},
     "exo_get_mailbox_permission": {"identity"},
@@ -87,7 +89,10 @@ async def test_tools_without_credentials_return_not_configured():
     return the error envelope rather than raise."""
     mcp = create_mcp_server(Settings())
     for name, required in EXPECTED_TOOLS.items():
-        args = {key: (True if key == "hidden" else "x") for key in required}
+        args = {
+            key: (True if key == "hidden" else ["x"] if key == "aliases" else "x")
+            for key in required
+        }
         result = await mcp.call_tool(name, args)
         # FastMCP returns (content, structured) or just content depending on version.
         content = result[0] if isinstance(result, tuple) else result

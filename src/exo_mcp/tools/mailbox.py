@@ -323,3 +323,57 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
                 state.get("forwarding_address") or state.get("forwarding_smtp_address")
             )
         return dump_json_capped(result)
+
+    @mcp.tool(annotations=ToolAnnotations(idempotentHint=True))
+    async def exo_add_email_alias(
+        identity: Annotated[
+            str,
+            Field(description="Mailbox UPN, primary SMTP address, alias or GUID."),
+        ],
+        aliases: Annotated[
+            list[str],
+            Field(description="One or more alias/old addresses to add, e.g. "
+                              "[\"old-name@contoso.com\"]. Plain addresses are sent "
+                              "as smtp: (case-insensitive secondary); include the "
+                              "SMTP: prefix yourself to set a new primary instead."),
+        ],
+    ) -> str:
+        """Add one or more alias (proxy) addresses to a mailbox (PRD-20480).
+
+        Additive: existing primary and alias addresses are left untouched.
+        Rejects locally if aliases is empty, no round-trip to Exchange. An
+        address already used by a different recipient surfaces Exchange's
+        rejection rather than being dropped silently. Response is never
+        verified: confirm later with exo_get_mailbox.
+        """
+        if not aliases:
+            return error_envelope(
+                "invalid_argument", "Provide at least one alias address.", False
+            )
+
+        client = client_factory()
+        if client is None:
+            return NO_CREDENTIALS
+
+        wire_addresses = [a if ":" in a else f"smtp:{a}" for a in aliases]
+        try:
+            await client.invoke(
+                "Set-Mailbox",
+                {"Identity": identity, "EmailAddresses": {"Add": wire_addresses}},
+            )
+        except ExoError as exc:
+            return exc.to_envelope()
+
+        return dump_json_capped(
+            {
+                "identity": identity,
+                "aliases_requested": aliases,
+                "accepted": True,
+                "verified": False,
+                "note": (
+                    "Exchange Online accepted the change, but it replicates across "
+                    "the directory, which commonly takes a few minutes. Confirm "
+                    "with exo_get_mailbox afterwards."
+                ),
+            }
+        )
