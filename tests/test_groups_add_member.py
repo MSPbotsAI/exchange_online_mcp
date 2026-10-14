@@ -52,10 +52,11 @@ async def test_add_new_member_succeeds(mcp, upstream, credentials):
         r for r in upstream.invoke_requests if r["cmdlet"] == "Add-DistributionGroupMember"
     ]
     assert len(add_calls) == 1
+    # BypassSecurityGroupManagerCheck is omitted by default — sending it at all
+    # needs Organization Management (PRD-20394 INT finding).
     assert add_calls[0]["parameters"] == {
         "Identity": "sales@contoso.com",
         "Member": "bob@contoso.com",
-        "BypassSecurityGroupManagerCheck": True,
         "Confirm": False,
     }
 
@@ -202,3 +203,143 @@ async def test_add_member_member_not_found(mcp, upstream, credentials):
     )
 
     assert result["error"]["code"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_add_member_sends_bypass_only_when_asked(mcp, upstream, credentials):
+    upstream.responses["Get-Recipient"] = [USABLE_GROUP]
+    upstream.responses["Get-DistributionGroupMember"] = [EXISTING_MEMBER]
+
+    await call(
+        mcp,
+        credentials,
+        "exo_add_distribution_group_member",
+        {
+            "group": "sales@contoso.com",
+            "member": "bob@contoso.com",
+            "bypass_security_group_manager_check": True,
+        },
+    )
+
+    add_call = next(
+        r for r in upstream.invoke_requests if r["cmdlet"] == "Add-DistributionGroupMember"
+    )
+    assert add_call["parameters"]["BypassSecurityGroupManagerCheck"] is True
+
+
+@pytest.mark.asyncio
+async def test_add_member_explicit_false_omits_bypass(mcp, upstream, credentials):
+    """False must not reach the wire: Exchange checks role entries per
+    parameter, so even `BypassSecurityGroupManagerCheck: false` is refused for
+    a Recipient Management app (observed on INT, 2026-10-14)."""
+    upstream.responses["Get-Recipient"] = [USABLE_GROUP]
+    upstream.responses["Get-DistributionGroupMember"] = [EXISTING_MEMBER]
+
+    await call(
+        mcp,
+        credentials,
+        "exo_add_distribution_group_member",
+        {
+            "group": "sales@contoso.com",
+            "member": "bob@contoso.com",
+            "bypass_security_group_manager_check": False,
+        },
+    )
+
+    add_call = next(
+        r for r in upstream.invoke_requests if r["cmdlet"] == "Add-DistributionGroupMember"
+    )
+    assert "BypassSecurityGroupManagerCheck" not in add_call["parameters"]
+
+
+@pytest.mark.asyncio
+async def test_add_member_bypass_denied_maps_to_named_error(mcp, upstream, credentials):
+    upstream.responses["Get-Recipient"] = [USABLE_GROUP]
+    upstream.responses["Get-DistributionGroupMember"] = [EXISTING_MEMBER]
+    upstream.cmdlet_errors["Add-DistributionGroupMember"] = (
+        403,
+        {"error": {"message": "Access denied"}},
+    )
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_distribution_group_member",
+        {
+            "group": "sales@contoso.com",
+            "member": "bob@contoso.com",
+            "bypass_security_group_manager_check": True,
+        },
+    )
+
+    assert result["error"]["code"] == "bypass_not_permitted"
+    assert result["error"]["retryable"] is False
+
+
+@pytest.mark.asyncio
+async def test_add_member_rbac_denial_without_bypass_stays_unauthorized(
+    mcp, upstream, credentials
+):
+    upstream.responses["Get-Recipient"] = [USABLE_GROUP]
+    upstream.responses["Get-DistributionGroupMember"] = [EXISTING_MEMBER]
+    upstream.cmdlet_errors["Add-DistributionGroupMember"] = (
+        403,
+        {"error": {"message": "Access denied"}},
+    )
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_distribution_group_member",
+        {"group": "sales@contoso.com", "member": "bob@contoso.com"},
+    )
+
+    assert result["error"]["code"] == "unauthorized"
+
+
+@pytest.mark.asyncio
+async def test_add_member_not_owner_maps_to_named_error(mcp, upstream, credentials):
+    upstream.responses["Get-Recipient"] = [USABLE_GROUP]
+    upstream.responses["Get-DistributionGroupMember"] = [EXISTING_MEMBER]
+    upstream.cmdlet_errors["Add-DistributionGroupMember"] = (
+        400,
+        {
+            "error": {
+                "message": "You don't have sufficient permissions. This operation can "
+                "only be performed by a manager of the group."
+            }
+        },
+    )
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_distribution_group_member",
+        {"group": "sales@contoso.com", "member": "bob@contoso.com"},
+    )
+
+    assert result["error"]["code"] == "not_group_manager"
+
+
+@pytest.mark.asyncio
+async def test_remove_member_omits_bypass_by_default_and_maps_denial(
+    mcp, upstream, credentials
+):
+    upstream.cmdlet_errors["Remove-DistributionGroupMember"] = (
+        403,
+        {"error": {"message": "Access denied"}},
+    )
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_remove_distribution_group_member",
+        {
+            "group": "sales@contoso.com",
+            "member": "alice@contoso.com",
+            "bypass_security_group_manager_check": True,
+        },
+    )
+
+    assert result["error"]["code"] == "bypass_not_permitted"
+    assert upstream.invoke_requests[0]["parameters"]["BypassSecurityGroupManagerCheck"] is True

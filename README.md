@@ -34,8 +34,8 @@ POST https://outlook.office365.com/adminapi/beta/{tenant}/InvokeCommand
 | `exo_convert_mailbox_to_shared(identity)` | write, destructive. `Set-Mailbox -Type Shared`, then reads the mailbox back to confirm |
 | `exo_set_mailbox_hidden(identity, hidden)` | write, idempotent, reversible |
 | `exo_set_mailbox_forwarding(identity, forward_to=None, deliver_and_forward=True)` | write, idempotent, reversible. Forwards to a recipient **inside the tenant** only (`ForwardingAddress`); omit `forward_to` to switch forwarding off, which also clears any external `ForwardingSmtpAddress` set elsewhere. Reports `previous_forwarding` |
-| `exo_add_distribution_group_member(group, member, bypass_security_group_manager_check=True)` | write, idempotent. Repeating an add for an existing member reports `already_member` instead of failing. Rejects dynamic distribution groups, on-premises-synchronized groups and Microsoft 365 Groups with a distinct named error each — none of those can be managed through this tool |
-| `exo_remove_distribution_group_member(group, member, bypass_security_group_manager_check=True)` | write, destructive. One named member per call — no bulk removal |
+| `exo_add_distribution_group_member(group, member, bypass_security_group_manager_check=False)` | write, idempotent. Repeating an add for an existing member reports `already_member` instead of failing. Rejects dynamic distribution groups, on-premises-synchronized groups and Microsoft 365 Groups with a distinct named error each — none of those can be managed through this tool |
+| `exo_remove_distribution_group_member(group, member, bypass_security_group_manager_check=False)` | write, destructive. One named member per call — no bulk removal |
 | `exo_get_auto_reply(identity)` | read-only. Returns the mailbox's automatic-reply state, audience, both message bodies, and the scheduled window. `start_time`/`end_time` are always UTC with a trailing `Z` |
 | `exo_set_auto_reply(identity, auto_reply_state=None, external_audience=None, internal_message=None, external_message=None, start_time=None, end_time=None)` | write, idempotent. Only supplied fields change — unsupplied fields keep their current value. `start_time`/`end_time` require a timezone offset and are converted to UTC before writing; reads the configuration back once after writing and returns the persisted result |
 | `exo_list_mobile_devices(mailbox, limit=50)` | read-only. `limit` 1–200, results truncated with `has_more` |
@@ -226,5 +226,10 @@ Logging and sensitive information
 Known follow-ups for the first real tenant
 - Whether `X-AnchorMailbox` is required for every cmdlet under app-only auth, and whether
   the tenant-GUID form (which yields no anchor) is sufficient.
-- Whether `BypassSecurityGroupManagerCheck` is needed for mail-enabled security groups in
-  practice, or should become opt-in.
+- `BypassSecurityGroupManagerCheck` is now opt-in (PRD-20394 INT finding, 2026-10-14): with
+  the app holding only Exchange Recipient Administrator, any call that carried the switch —
+  even set to false — was refused with 403. The switch is sent only when the caller passes
+  `bypass_security_group_manager_check=true`; a denial then reports `bypass_not_permitted`,
+  and Exchange's owner check reports `not_group_manager`. Still to confirm on a real tenant:
+  whether Recipient Management can change a group's membership without the switch when the
+  app is not a group owner.
