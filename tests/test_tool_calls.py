@@ -232,7 +232,8 @@ async def test_remove_distribution_group_member_parameters(mcp, upstream, creden
     assert upstream.invoke_requests[0]["parameters"] == {
         "Identity": "all-staff@contoso.com",
         "Member": "alice@contoso.com",
-        "BypassSecurityGroupManagerCheck": True,
+        # No BypassSecurityGroupManagerCheck by default: sending it at all needs
+        # Organization Management (PRD-20394 INT finding).
         # Confirm:false keeps the cmdlet from waiting on an interactive prompt.
         "Confirm": False,
     }

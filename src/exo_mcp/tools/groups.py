@@ -28,6 +28,55 @@ _MEMBER_PAGE_SIZE = 200
 # plain upstream_error instead of being mistaken for something else.
 _DUPLICATE_MEMBER_MARKERS = ("already a member", "already exists")
 
+# Exchange's refusal when a non-owner changes membership without
+# BypassSecurityGroupManagerCheck. Best-effort wording match, same caveat as
+# the duplicate markers above: anything else falls through unchanged.
+_NOT_GROUP_MANAGER_MARKERS = ("manager of the group",)
+
+_BYPASS_DESCRIPTION = (
+    "Set true to override the group's owner (ManagedBy) check. Off by default: "
+    "sending this switch at all requires the Organization Management role "
+    "(Exchange Administrator), which a Recipient Management app does not hold — "
+    "Exchange then refuses the whole call with HTTP 403. Leave it false unless "
+    "the call fails with not_group_manager and the connector has that role."
+)
+
+
+def _bypass_parameter(bypass: bool) -> bool | None:
+    """The switch value to send: True, or None so invoke drops it entirely.
+
+    PRD-20394 INT finding: Exchange checks role entries per parameter, so even
+    `BypassSecurityGroupManagerCheck: false` on the wire is refused with 403
+    for an app holding only Exchange Recipient Administrator.
+    """
+    return True if bypass else None
+
+
+def _membership_error(exc: ExoError, bypass: bool) -> str:
+    """Map the two permission failures a membership change can hit to codes
+    an agent can act on; everything else keeps its normal envelope."""
+    if exc.code == "unauthorized" and bypass:
+        return ExoError(
+            403,
+            "Exchange refused the change because bypass_security_group_manager_check "
+            "was set; that switch needs the Organization Management role "
+            "(Exchange Administrator). Retry without it, or grant the connector "
+            f"that role. Upstream: {exc.message}",
+            code="bypass_not_permitted",
+            retryable=False,
+        ).to_envelope()
+    if any(marker in exc.message.lower() for marker in _NOT_GROUP_MANAGER_MARKERS):
+        return ExoError(
+            403,
+            "Exchange requires the caller to be an owner (ManagedBy) of this group. "
+            "Add the connector's app as a group owner, or retry with "
+            "bypass_security_group_manager_check=true if it holds the Organization "
+            f"Management role. Upstream: {exc.message}",
+            code="not_group_manager",
+            retryable=False,
+        ).to_envelope()
+    return exc.to_envelope()
+
 
 def _is_already_member(member: str, members: list[dict]) -> bool:
     needle = member.strip().lower()
@@ -62,13 +111,8 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
         ],
         bypass_security_group_manager_check: Annotated[
             bool,
-            Field(
-                description=(
-                    "Allow the addition when the caller is not listed as a group "
-                    "manager. Needed for most admin-driven additions."
-                )
-            ),
-        ] = True,
+            Field(description=_BYPASS_DESCRIPTION),
+        ] = False,
     ) -> str:
         """Add one member to a distribution group or mail-enabled security group.
 
@@ -120,7 +164,9 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
                 {
                     "Identity": group,
                     "Member": member,
-                    "BypassSecurityGroupManagerCheck": bypass_security_group_manager_check,
+                    "BypassSecurityGroupManagerCheck": _bypass_parameter(
+                        bypass_security_group_manager_check
+                    ),
                     "Confirm": False,
                 },
             )
@@ -129,7 +175,7 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
                 return dump_json_capped(
                     {"group": group, "member": member, "added": False, "already_member": True}
                 )
-            return exc.to_envelope()
+            return _membership_error(exc, bypass_security_group_manager_check)
 
         return dump_json_capped({"group": group, "member": member, "added": True})
 
@@ -150,13 +196,8 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
         ],
         bypass_security_group_manager_check: Annotated[
             bool,
-            Field(
-                description=(
-                    "Allow the removal when the caller is not listed as a group "
-                    "manager. Needed for most admin-driven removals."
-                )
-            ),
-        ] = True,
+            Field(description=_BYPASS_DESCRIPTION),
+        ] = False,
     ) -> str:
         """Remove one member from a distribution or mail-enabled security group.
 
@@ -175,11 +216,13 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
                 {
                     "Identity": group,
                     "Member": member,
-                    "BypassSecurityGroupManagerCheck": bypass_security_group_manager_check,
+                    "BypassSecurityGroupManagerCheck": _bypass_parameter(
+                        bypass_security_group_manager_check
+                    ),
                     "Confirm": False,
                 },
             )
         except ExoError as exc:
-            return exc.to_envelope()
+            return _membership_error(exc, bypass_security_group_manager_check)
 
         return dump_json_capped({"group": group, "member": member, "removed": True})
