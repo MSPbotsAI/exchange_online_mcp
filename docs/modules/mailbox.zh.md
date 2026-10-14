@@ -17,3 +17,10 @@
 - `exo_set_mailbox_hidden` 不再读回。`Set-Mailbox` 成功后返回 `requested_hidden`、`write_accepted: true`、`verified: false`，加一条 `note`，提示调用方约 5 分钟后用 `exo_get_mailbox` 复查。`_read_mailbox_until_hidden_matches` 和相关常量已删掉。返回里不再有 `hidden_from_address_lists_enabled`，避免调用方把同一次调用里读到的值当成已经复制完的状态。
 - 不在工具里轮询：同一次调用里的读回证明不了什么，轮询几分钟又会让 MCP 调用超过网关 / Agent 的超时。复查放到 SOP 后面的步骤做。
 - 测试：`test_set_mailbox_hidden_reports_pending_not_verified`、`test_set_mailbox_hidden_unhide_is_also_unverified`、`test_set_mailbox_hidden_reports_not_found`。`_FlipAfterNReads` 随重试测试一起删掉。
+
+## PRD-20480 · 2026-10-14
+
+- 新工具 `exo_add_email_alias`（`src/exo_mcp/tools/mailbox.py` @ `3ec7afb`），放在 `exo_set_mailbox_forwarding` 之后。用增量写法 `Set-Mailbox -EmailAddresses @{Add=[...]}`——已有的主地址/别名地址不受影响；裸地址会自动补上 `smtp:` 前缀，已经带 `:` 的地址原样发出（这样调用方可以显式用 `SMTP:` 前缀设一个新的主地址）。`aliases` 为空时在本地直接拒绝，不会为一个明显有问题的请求去调用 Exchange。沿用上面 `exo_set_mailbox_hidden`/`exo_set_mailbox_forwarding` 的 `verified: false` + 复制延迟提示模式——本模块第三个带这条提醒的工具。
+- `{"Add": [...]}` 这种线上格式是本文件第一次用到多值 Add/Remove 类的 cmdlet 参数——之前所有 `Set-Mailbox` 工具设的都是标量属性。还没有在真实 EXO REST 端点上验证过（设计文档自己的 Option analysis 里标出来了，对应 TC-EXO-004）；如果哪天被拒绝，文档里给的后备方案是靠 `exo_get_mailbox` 读出全量列表再 `Set-Mailbox` 整体写回，这次没有实现，因为增量写法目前还没确认过失败。
+- 测试覆盖：`tests/test_tool_calls.py::test_add_email_alias_adds_multiple_without_disturbing_existing`、`::test_add_email_alias_rejects_address_in_use_elsewhere`、`::test_add_email_alias_rejects_empty_list_without_calling_exchange`、`::test_add_email_alias_not_found`（均为本单新增，在 `3ec7afb` 上全部通过）。
+- 自动化测试未覆盖的部分（需要真实租户——见 `docs/tickets/PRD-20480.md` § 自测，TC-EXO-004）：真实 EXO REST 端点是否真的原样接受 `{"Add": [...]}` 这种格式，还是需要走读-合并-写回的后备方案。

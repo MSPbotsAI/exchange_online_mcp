@@ -5,7 +5,11 @@
     "type": "auto",
     "source": "design",
     "text": "Given a valid user_id and no optional parameters, When graph_create_tap is called, Then it returns a Temporary Access Pass usable exactly once within its lifetime window",
-    "tests": ["ms-graph-mcp/tests/test_tools.py::test_graph_create_tap_default_is_usable_once"]
+    "tests": [
+      "ms-graph-mcp/tests/test_tools.py::test_graph_create_tap_default_is_usable_once"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tools.py::test_graph_create_tap_default_is_usable_once -- 1 passed in 0.85s"
   },
   {
     "id": "TC-MSG-002",
@@ -13,7 +17,11 @@
     "type": "auto",
     "source": "design",
     "text": "Given is_usable_once=false and an explicit lifetime_minutes, When graph_create_tap is called, Then the returned pass's settings match what was requested",
-    "tests": ["ms-graph-mcp/tests/test_tools.py::test_graph_create_tap_honors_explicit_settings"]
+    "tests": [
+      "ms-graph-mcp/tests/test_tools.py::test_graph_create_tap_honors_explicit_settings"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tools.py::test_graph_create_tap_honors_explicit_settings -- 1 passed in 0.92s"
   },
   {
     "id": "TC-MSG-003",
@@ -21,7 +29,11 @@
     "type": "auto",
     "source": "design",
     "text": "Given a non-existent user_id, When graph_create_tap is called, Then a structured not-found error is returned, not a raw exception",
-    "tests": ["ms-graph-mcp/tests/test_tools.py::test_graph_create_tap_user_not_found_returns_envelope"]
+    "tests": [
+      "ms-graph-mcp/tests/test_tools.py::test_graph_create_tap_user_not_found_returns_envelope"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tools.py::test_graph_create_tap_user_not_found_returns_envelope -- 1 passed in 0.90s"
   },
   {
     "id": "TC-EXO-001",
@@ -29,7 +41,11 @@
     "type": "auto",
     "source": "design",
     "text": "Given a shared mailbox and a delegate without SendOnBehalf rights, When exo_add_sendonbehalf_permission is called, Then the delegate is granted SendOnBehalf on that mailbox",
-    "tests": ["exchange_online_mcp/tests/test_tool_calls.py::test_exo_add_sendonbehalf_permission_grants_delegate"]
+    "tests": [
+      "exchange_online_mcp/tests/test_tool_calls.py::test_add_sendonbehalf_permission_grants_delegate"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tool_calls.py::test_add_sendonbehalf_permission_grants_delegate -- 1 passed"
   },
   {
     "id": "TC-EXO-001b",
@@ -44,8 +60,8 @@
       "Call exo_get_mailbox(identity=<mailbox>) and inspect GrantSendOnBehalfTo"
     ],
     "expect": "delegate's UPN/alias appears in the mailbox's GrantSendOnBehalfTo list",
-    "result": "untested",
-    "evidence": null
+    "result": "blocked",
+    "evidence": "No live Microsoft Graph / Exchange Online tenant credentials available in this dev+test environment -- cannot be scripted here, needs a real INT tenant run per the design doc's own Test strategy section."
   },
   {
     "id": "TC-EXO-002",
@@ -53,7 +69,11 @@
     "type": "auto",
     "source": "design",
     "text": "Given a mailbox and two new alias addresses passed in one call, When exo_add_email_alias is called, Then both are added and existing primary/alias addresses are unchanged",
-    "tests": ["exchange_online_mcp/tests/test_tool_calls.py::test_exo_add_email_alias_adds_multiple_without_disturbing_existing"]
+    "tests": [
+      "exchange_online_mcp/tests/test_tool_calls.py::test_add_email_alias_adds_multiple_without_disturbing_existing"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tool_calls.py::test_add_email_alias_adds_multiple_without_disturbing_existing -- 1 passed"
   },
   {
     "id": "TC-EXO-003",
@@ -61,22 +81,26 @@
     "type": "auto",
     "source": "design",
     "text": "Given an alias address already assigned to a different recipient in the tenant, When exo_add_email_alias is called with it, Then Exchange's rejection is surfaced for that address rather than silently dropped",
-    "tests": ["exchange_online_mcp/tests/test_tool_calls.py::test_exo_add_email_alias_rejects_address_in_use_elsewhere"]
+    "tests": [
+      "exchange_online_mcp/tests/test_tool_calls.py::test_add_email_alias_rejects_address_in_use_elsewhere"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tool_calls.py::test_add_email_alias_rejects_address_in_use_elsewhere -- 1 passed"
   },
   {
     "id": "TC-EXO-004",
     "ac": "AC4",
     "type": "manual",
     "source": "design",
-    "text": "Given the Add-hashtable wire format assumption in Tech design §B option analysis, When exo_add_email_alias / exo_add_sendonbehalf_permission are first run against the real EXO REST endpoint, Then confirm whether {\"Add\": [...]} is accepted as-is or the read-merge-write fallback is needed",
+    "text": "Given the Add-hashtable wire format assumption in Tech design \u00a7B option analysis, When exo_add_email_alias / exo_add_sendonbehalf_permission are first run against the real EXO REST endpoint, Then confirm whether {\"Add\": [...]} is accepted as-is or the read-merge-write fallback is needed",
     "steps": [
       "Call exo_add_email_alias against a disposable test mailbox on the INT tenant",
       "Inspect the raw HTTP response/status from the EXO REST endpoint",
-      "If rejected, switch the implementation to the read-merge-write fallback documented in Tech design §B"
+      "If rejected, switch the implementation to the read-merge-write fallback documented in Tech design \u00a7B"
     ],
     "expect": "either a 200-class success with the alias actually added (confirmed via exo_get_mailbox), or a specific rejection reason that tells us to use the fallback",
-    "result": "untested",
-    "evidence": null
+    "result": "blocked",
+    "evidence": "No live Microsoft Graph / Exchange Online tenant credentials available in this dev+test environment -- cannot be scripted here, needs a real INT tenant run per the design doc's own Test strategy section."
   },
   {
     "id": "TC-MSG-004",
@@ -84,7 +108,11 @@
     "type": "auto",
     "source": "design",
     "text": "Given a group id and a user id not currently an owner, When graph_add_group_owner is called, Then the user becomes an owner",
-    "tests": ["ms-graph-mcp/tests/test_tools.py::test_graph_add_group_owner_adds_new_owner"]
+    "tests": [
+      "ms-graph-mcp/tests/test_tools.py::test_graph_add_group_owner_adds_new_owner"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tools.py::test_graph_add_group_owner_adds_new_owner -- 1 passed in 0.93s"
   },
   {
     "id": "TC-MSG-005",
@@ -92,7 +120,11 @@
     "type": "auto",
     "source": "design",
     "text": "Given the same call repeated for a user already an owner, When graph_add_group_owner is called again, Then the tool reports an already-satisfied state rather than a failure",
-    "tests": ["ms-graph-mcp/tests/test_tools.py::test_graph_add_group_owner_is_idempotent_for_existing_owner"]
+    "tests": [
+      "ms-graph-mcp/tests/test_tools.py::test_graph_add_group_owner_is_idempotent_for_existing_owner"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tools.py::test_graph_add_group_owner_is_idempotent_for_existing_owner -- 1 passed in 0.84s"
   },
   {
     "id": "TC-MSG-005b",
@@ -106,8 +138,8 @@
       "Inspect the raw Graph error response"
     ],
     "expect": "either the existing graph_assign_groups-style 'already exist' text match works unchanged, or the handling needs adjusting to the real error text",
-    "result": "untested",
-    "evidence": null
+    "result": "blocked",
+    "evidence": "No live Microsoft Graph / Exchange Online tenant credentials available in this dev+test environment -- cannot be scripted here, needs a real INT tenant run per the design doc's own Test strategy section."
   },
   {
     "id": "TC-MSG-006",
@@ -115,7 +147,11 @@
     "type": "auto",
     "source": "design",
     "text": "Given a valid language tag, When passed to graph_create_user, Then a subsequent graph_get_user shows that preferredLanguage",
-    "tests": ["ms-graph-mcp/tests/test_tools.py::test_graph_create_user_sets_preferred_language"]
+    "tests": [
+      "ms-graph-mcp/tests/test_tools.py::test_create_user_sets_preferred_language"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tools.py::test_create_user_sets_preferred_language -- 1 passed in 0.83s"
   },
   {
     "id": "TC-MSG-007",
@@ -123,7 +159,11 @@
     "type": "auto",
     "source": "design",
     "text": "Given a valid language tag, When passed to graph_update_user on an existing user, Then a subsequent graph_get_user shows the updated preferredLanguage",
-    "tests": ["ms-graph-mcp/tests/test_tools.py::test_graph_update_user_sets_preferred_language"]
+    "tests": [
+      "ms-graph-mcp/tests/test_tools.py::test_update_user_sets_preferred_language"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tools.py::test_update_user_sets_preferred_language -- 1 passed in 0.84s"
   },
   {
     "id": "TC-SEC-001",
@@ -137,8 +177,8 @@
       "Confirm every new/changed function still goes through the existing client_factory()/ExoClient per-request credential path with no alternate code path"
     ],
     "expect": "no cross-tenant override surface found in the diff",
-    "result": "untested",
-    "evidence": null
+    "result": "pass",
+    "evidence": "git diff 81aa0a5 -- src/graph_mcp/tools/{users,groups}.py and git diff 2e9db6a -- src/exo_mcp/tools/{permissions,mailbox}.py: new params are user_id/group_id/identity/delegate/aliases/preferred_language, no tenant_id/org_id/directory-override parameter; 'tenant'/'directory' only appear in prose (docstrings, replication notes), not as parameters. grep client_factory() confirms graph_create_tap/graph_add_group_owner and graph_create_user/graph_update_user's preferred_language all resolve the client via the existing per-request client_factory(); exo_add_sendonbehalf_permission/exo_add_email_alias both resolve via the existing per-request client_factory()/ExoClient -- no alternate code path added for any of the 5 changes."
   },
   {
     "id": "TC-MSG-008",
@@ -152,7 +192,7 @@
       "After the scope grant + tenant re-consent, repeat the same call and confirm it now succeeds"
     ],
     "expect": "pre-rollout 403 text is recognizably a permission/consent issue (matches the precedent documented in this repo's README for Mail.Read/Calendars.ReadWrite rollouts), not confusable with a not-found error",
-    "result": "untested",
-    "evidence": null
+    "result": "blocked",
+    "evidence": "No live Microsoft Graph / Exchange Online tenant credentials available in this dev+test environment -- cannot be scripted here, needs a real INT tenant run per the design doc's own Test strategy section."
   }
 ]

@@ -5,3 +5,4 @@
 | 代码路径 | 模块文档 |
 |---|---|
 | `src/exo_mcp/tools/mailbox.py` | [mailbox.zh.md](mailbox.zh.md)（[English](mailbox.md)） |
+| `src/exo_mcp/tools/permissions.py` | [permissions.zh.md](permissions.zh.md)（[English](permissions.md)） |
