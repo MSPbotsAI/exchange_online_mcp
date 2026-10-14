@@ -125,11 +125,12 @@ def create_mcp_server(settings: Settings) -> FastMCP:
             "the departing person's mail has to keep reaching a colleague; its target must "
             "be a recipient inside the tenant. exo_add_distribution_group_member repeats "
             "safely (reports already_member) and rejects dynamic, on-premises-synced and "
-            "Microsoft 365 groups with a distinct error each. exo_get_auto_reply/"
-            "exo_set_auto_reply read/update automatic replies; date/times need a timezone "
-            "offset and convert to UTC; set never touches a field it was not given. "
-            "Removing a mobile device does not wipe the handset. Every tool acts on the "
-            "one tenant whose certificate is supplied; there is no cross-tenant access."
+            "Microsoft 365 groups with a distinct error each. exo_set_auto_reply needs a "
+            "timezone offset on date/times (stored as UTC) and changes only the fields "
+            "given. Removing a mobile device does not wipe the handset. "
+            "exo_get_mailbox_permission / exo_get_recipient_permission show current "
+            "FullAccess/SendAs trustees. Every tool acts on the one tenant whose "
+            "certificate is supplied; there is no cross-tenant access."
         ),
         # A reverse proxy / docker network sends a non-localhost Host header, which
         # the SDK's DNS-rebinding protection rejects with 421. This service is never
@@ -142,10 +143,11 @@ def create_mcp_server(settings: Settings) -> FastMCP:
     def client_factory() -> ExoClient | None:
         return get_client_from_context(settings)
 
-    from .tools import devices, groups, mailbox
+    from .tools import devices, groups, mailbox, permissions
 
     mailbox.register(mcp, client_factory)
     groups.register(mcp, client_factory)
     devices.register(mcp, client_factory)
+    permissions.register(mcp, client_factory)
 
     return mcp

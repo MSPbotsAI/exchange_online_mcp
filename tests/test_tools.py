@@ -25,13 +25,27 @@ EXPECTED_TOOLS = {
     "exo_set_auto_reply": {"identity"},
     "exo_list_mobile_devices": {"mailbox"},
     "exo_remove_mobile_device": {"device_id"},
+    "exo_add_mailbox_permission": {"identity", "user"},
+    "exo_remove_mailbox_permission": {"identity", "user"},
+    "exo_add_recipient_permission": {"identity", "trustee"},
+    "exo_remove_recipient_permission": {"identity", "trustee"},
+    "exo_get_mailbox_permission": {"identity"},
+    "exo_get_recipient_permission": {"identity"},
 }
 
-_READ_ONLY = {"exo_get_mailbox", "exo_list_mobile_devices", "exo_get_auto_reply"}
+_READ_ONLY = {
+    "exo_get_mailbox",
+    "exo_list_mobile_devices",
+    "exo_get_auto_reply",
+    "exo_get_mailbox_permission",
+    "exo_get_recipient_permission",
+}
 _DESTRUCTIVE = {
     "exo_convert_mailbox_to_shared",
     "exo_remove_distribution_group_member",
     "exo_remove_mobile_device",
+    "exo_remove_mailbox_permission",
+    "exo_remove_recipient_permission",
 }
 
 

@@ -138,6 +138,22 @@ async def _read_mailbox(client: ExoClient, identity: str) -> dict | None:
     return project(records[0], _MAILBOX_FIELDS)
 
 
+# PRD-20321: a GAL-visibility change reaches other EXO servers through
+# directory replication, which took over a minute in a real tenant and can run
+# to several. A read issued in the same call lands on the server that took the
+# write and echoes the new value at once, so it proves nothing; reads issued
+# later from elsewhere can still show the old value for minutes. The tool
+# therefore reports the write as accepted but unverified and leaves the check to
+# a later exo_get_mailbox.
+_HIDDEN_PENDING_NOTE = (
+    "Exchange Online accepted the change, but it reaches the global address list "
+    "through directory replication, which commonly takes several minutes. Until "
+    "then exo_get_mailbox may still show the previous value. Re-check with "
+    "exo_get_mailbox after about 5 minutes; if it still shows the previous value, "
+    "call this tool again."
+)
+
+
 def _shared_conversion(mailbox: dict, statistics: dict | None) -> dict:
     """Whether this mailbox can become a licence-free shared mailbox.
 
@@ -265,6 +281,9 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
 
         The mailbox stops appearing in the directory but stays reachable at its
         address. Reversible: call again with hidden=false.
+
+        The change takes several minutes to replicate, so the response is
+        never verified: confirm it later with exo_get_mailbox.
         """
         client = client_factory()
         if client is None:
@@ -278,18 +297,15 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
         except ExoError as exc:
             return exc.to_envelope()
 
-        result = {"identity": identity, "hidden_from_address_lists_enabled": hidden}
-        try:
-            mailbox = await _read_mailbox(client, identity)
-        except ExoError:
-            mailbox = None
-        if mailbox and "hidden_from_address_lists_enabled" in mailbox:
-            result["hidden_from_address_lists_enabled"] = mailbox[
-                "hidden_from_address_lists_enabled"
-            ]
-        elif not mailbox:
-            result["verified"] = False
-        return dump_json_capped(result)
+        return dump_json_capped(
+            {
+                "identity": identity,
+                "requested_hidden": hidden,
+                "write_accepted": True,
+                "verified": False,
+                "note": _HIDDEN_PENDING_NOTE,
+            }
+        )
 
     @mcp.tool(annotations=ToolAnnotations(idempotentHint=True))
     async def exo_set_mailbox_forwarding(
