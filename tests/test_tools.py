@@ -19,7 +19,10 @@ EXPECTED_TOOLS = {
     "exo_convert_mailbox_to_shared": {"identity"},
     "exo_set_mailbox_hidden": {"identity", "hidden"},
     "exo_set_mailbox_forwarding": {"identity"},
+    "exo_add_distribution_group_member": {"group", "member"},
     "exo_remove_distribution_group_member": {"group", "member"},
+    "exo_get_auto_reply": {"identity"},
+    "exo_set_auto_reply": {"identity"},
     "exo_list_mobile_devices": {"mailbox"},
     "exo_remove_mobile_device": {"device_id"},
     "exo_add_mailbox_permission": {"identity", "user"},
@@ -33,6 +36,7 @@ EXPECTED_TOOLS = {
 _READ_ONLY = {
     "exo_get_mailbox",
     "exo_list_mobile_devices",
+    "exo_get_auto_reply",
     "exo_get_mailbox_permission",
     "exo_get_recipient_permission",
 }

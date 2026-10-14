@@ -1,0 +1,131 @@
+[
+  {
+    "id": "TC-EXO-001",
+    "ac": "AC1",
+    "text": "Given group g1 with member m1 not yet present, When exo_add_distribution_group_member(group=g1, member=m1) is called, Then the response is {\"added\": true} and a subsequent membership read includes m1",
+    "type": "auto",
+    "tests": ["tests/test_groups_add_member.py::test_add_new_member_succeeds"]
+  },
+  {
+    "id": "TC-EXO-002",
+    "ac": "AC2",
+    "text": "Given m1 is already a member of g1, When exo_add_distribution_group_member(group=g1, member=m1) is called again, Then the response is {\"added\": false, \"already_member\": true} and no Add-DistributionGroupMember call is issued",
+    "type": "auto",
+    "tests": ["tests/test_groups_add_member.py::test_add_existing_member_is_idempotent"]
+  },
+  {
+    "id": "TC-EXO-003",
+    "ac": "AC3",
+    "text": "Given group resolves to RecipientTypeDetails=DynamicDistributionGroup, When exo_add_distribution_group_member is called, Then the response is error.code=dynamic_group_unsupported mentioning 'dynamic distribution group'",
+    "type": "auto",
+    "tests": ["tests/test_groups_add_member.py::test_add_member_rejects_dynamic_distribution_group"]
+  },
+  {
+    "id": "TC-EXO-004",
+    "ac": "AC4",
+    "text": "Given group resolves with IsDirSynced=true, When exo_add_distribution_group_member is called, Then the response is error.code=directory_synced_group_unsupported mentioning on-premises synchronization",
+    "type": "auto",
+    "tests": ["tests/test_groups_add_member.py::test_add_member_rejects_directory_synced_group"]
+  },
+  {
+    "id": "TC-EXO-005",
+    "ac": "AC5",
+    "text": "Given group resolves to RecipientTypeDetails=GroupMailbox, When exo_add_distribution_group_member is called, Then the response is error.code=microsoft_365_group_unsupported mentioning 'Microsoft 365 Group'",
+    "type": "auto",
+    "tests": ["tests/test_groups_add_member.py::test_add_member_rejects_microsoft_365_group"]
+  },
+  {
+    "id": "TC-EXO-006",
+    "ac": "AC3",
+    "text": "The three error codes used in TC-EXO-003/004/005 (dynamic_group_unsupported, directory_synced_group_unsupported, microsoft_365_group_unsupported) are pairwise distinct strings",
+    "type": "auto",
+    "tests": ["tests/test_groups_add_member.py::test_restricted_group_error_codes_are_distinct"]
+  },
+  {
+    "id": "TC-EXO-007",
+    "ac": "AC6",
+    "text": "Given group resolves to no recipient at all, When exo_add_distribution_group_member is called, Then the response is error.code=not_found",
+    "type": "auto",
+    "tests": ["tests/test_groups_add_member.py::test_add_member_group_not_found"]
+  },
+  {
+    "id": "TC-EXO-008",
+    "ac": "AC6",
+    "text": "Given group exists and is a usable type but member resolves to no recipient, When exo_add_distribution_group_member is called, Then the response is error.code=not_found",
+    "type": "auto",
+    "tests": ["tests/test_groups_add_member.py::test_add_member_member_not_found"]
+  },
+  {
+    "id": "TC-EXO-009",
+    "ac": "AC7",
+    "text": "Given a mailbox with a scheduled auto-reply configured, When exo_get_auto_reply is called, Then the response matches the mocked upstream record (state/audience/messages/start/end) and no write call is issued",
+    "type": "auto",
+    "tests": ["tests/test_mailbox_auto_reply.py::test_get_auto_reply_returns_current_config"]
+  },
+  {
+    "id": "TC-EXO-010",
+    "ac": "AC8",
+    "text": "Given an existing config with external_audience=Known and a non-empty external_message, When exo_set_auto_reply is called supplying only internal_message, Then the captured Set-MailboxAutoReplyConfiguration request contains only InternalMessage, and the post-write readback still shows the original external_audience/external_message",
+    "type": "auto",
+    "tests": ["tests/test_mailbox_auto_reply.py::test_set_auto_reply_preserves_unsupplied_fields"]
+  },
+  {
+    "id": "TC-EXO-011",
+    "ac": "AC9",
+    "text": "Given start_time=\"2026-01-10T09:00:00+10:00\" (Brisbane), When exo_set_auto_reply is called, Then the value sent upstream is \"2026-01-09T23:00:00Z\"",
+    "type": "auto",
+    "tests": ["tests/test_mailbox_auto_reply.py::test_set_auto_reply_converts_brisbane_local_to_utc"]
+  },
+  {
+    "id": "TC-EXO-012",
+    "ac": "AC10",
+    "text": "Given start_time=\"2026-01-10T09:00:00\" (no timezone offset), When exo_set_auto_reply is called, Then the response is error.code=invalid_argument and zero upstream Set-*/Get-* calls are recorded",
+    "type": "auto",
+    "tests": ["tests/test_mailbox_auto_reply.py::test_set_auto_reply_rejects_naive_datetime"]
+  },
+  {
+    "id": "TC-EXO-013",
+    "ac": "AC11",
+    "text": "After a successful exo_set_auto_reply call, exactly one Get-MailboxAutoReplyConfiguration invocation is recorded",
+    "type": "auto",
+    "tests": ["tests/test_mailbox_auto_reply.py::test_set_auto_reply_reads_back_exactly_once"]
+  },
+  {
+    "id": "TC-EXO-014",
+    "ac": "AC11",
+    "text": "Given the post-write Get-MailboxAutoReplyConfiguration call fails after the Set call succeeded, When exo_set_auto_reply is called, Then the response reports the write as succeeded with verified:false and no exception is raised",
+    "type": "auto",
+    "tests": ["tests/test_mailbox_auto_reply.py::test_set_auto_reply_readback_failure_reports_unverified"]
+  },
+  {
+    "id": "TC-EXO-015",
+    "ac": "AC12",
+    "text": "Given identity resolves to no mailbox, When exo_get_auto_reply or exo_set_auto_reply is called, Then the response is error.code=not_found",
+    "type": "auto",
+    "tests": [
+      "tests/test_mailbox_auto_reply.py::test_get_auto_reply_not_found",
+      "tests/test_mailbox_auto_reply.py::test_set_auto_reply_not_found"
+    ]
+  },
+  {
+    "id": "TC-EXO-016",
+    "ac": "AC13",
+    "text": "Given auto_reply_state=\"Maybe\" (not an accepted value), When exo_set_auto_reply is called, Then the response is error.code=invalid_argument naming the accepted values, and this happens before any upstream call",
+    "type": "auto",
+    "tests": ["tests/test_mailbox_auto_reply.py::test_set_auto_reply_rejects_invalid_enum_value"]
+  },
+  {
+    "id": "TC-EXO-017",
+    "ac": "AC14",
+    "text": "[需求缺失/INCOMPLETE] Design-review check (not a runtime test): neither exo_add_distribution_group_member, exo_get_auto_reply, nor exo_set_auto_reply accepts or forwards any tenant-selecting parameter; all three resolve their ExoClient exclusively through client_factory() (server.py:140-141), identical to the 7 existing tools. A true cross-tenant runtime test would require two real tenants' credentials, which this repo's test suite does not have.",
+    "type": "manual",
+    "steps": [
+      "Open the diff for groups.py and mailbox.py",
+      "Confirm none of the three new tool functions take a tenant/tenant_id/credentials parameter",
+      "Confirm each new tool calls client_factory() exactly like the existing 7 tools (server.py:140-141) and never constructs an ExoClient directly"
+    ],
+    "expect": "No tenant-selecting parameter exists on any of the three new tools; all three resolve credentials solely via client_factory()",
+    "result": "pass",
+    "evidence": "Reviewed src/exo_mcp/tools/groups.py:49-168 (exo_add_distribution_group_member) and src/exo_mcp/tools/mailbox.py:391-486 (exo_get_auto_reply, exo_set_auto_reply) @ c0d53ea: none of the three take a tenant/tenant_id/credentials parameter (grep -niE tenant on both files hits only forwarding-tool docstrings, unrelated). All three call client_factory() exactly once (mailbox.py:403,486; groups.py:81), identical to the 7 existing tools. 2026-10-13."
+  }
+]

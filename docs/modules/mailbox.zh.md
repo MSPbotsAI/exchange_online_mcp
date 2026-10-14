@@ -17,3 +17,11 @@
 - `exo_set_mailbox_hidden` 不再读回。`Set-Mailbox` 成功后返回 `requested_hidden`、`write_accepted: true`、`verified: false`，加一条 `note`，提示调用方约 5 分钟后用 `exo_get_mailbox` 复查。`_read_mailbox_until_hidden_matches` 和相关常量已删掉。返回里不再有 `hidden_from_address_lists_enabled`，避免调用方把同一次调用里读到的值当成已经复制完的状态。
 - 不在工具里轮询：同一次调用里的读回证明不了什么，轮询几分钟又会让 MCP 调用超过网关 / Agent 的超时。复查放到 SOP 后面的步骤做。
 - 测试：`test_set_mailbox_hidden_reports_pending_not_verified`、`test_set_mailbox_hidden_unhide_is_also_unverified`、`test_set_mailbox_hidden_reports_not_found`。`_FlipAfterNReads` 随重试测试一起删掉。
+
+## PRD-20394 · 2026-10-13
+
+- 新增 `exo_get_auto_reply`/`exo_set_auto_reply`（`src/exo_mcp/tools/mailbox.py:391-486` @ `c0d53ea`，工作分支 `dev01.mbagent/PRD-20394`，写这条记录时尚未合入 `main`——本仓库没有 `int` 分支，没有中间 ref 可引用；合入后请重新核对这个 path:line）。读取/更新邮箱的自动回复配置；set 调用只改它拿到的字段（依赖 `invoke()` 既有的 None 丢弃机制，`api_client.py:239-241`），并恰好做一次写入后读回。
+- **`exo_set_auto_reply` 在写入前不做预检读取**，这与上面的 `exo_set_mailbox_forwarding`（`:216-309`）不同。这是刻意的：工单的 AC 要求每次成功的 `exo_set_auto_reply` 恰好发起一次 `Get-MailboxAutoReplyConfiguration` 调用，加一次预检会变成两次。这个工具的「未找到」改为通过 `Set-MailboxAutoReplyConfiguration` 调用自身的错误文案浮现，由 `_classify()`（`api_client.py:99-106`）分类，与 `exo_set_mailbox_hidden` 已经依赖的机制相同。以后谁要在这里加第四个写邮箱的工具，应该明确自己决定"要不要预检读取"这个问题，而不是照抄随便看到的哪一个邻居——现有这两个工具在这一点上故意不一致，不是疏忽。
+- **DateTime 的线上格式是一个未经确认的假设，不是已验证的事实**：`_parse_offset_datetime`/`_datetime_to_z`（`:69-121`）把 `StartTime`/`EndTime` 以带 `Z` 的 UTC ISO-8601 格式发给 `Set-MailboxAutoReplyConfiguration`，`_normalize_upstream_time`（`:74-93`）假设 `Get-MailboxAutoReplyConfiguration` 返回同样格式、可按 UTC 存储理解的值。两者都没有针对真实租户验证过（见 `docs/tickets/PRD-20394.md` § 技术设计，风险 #1）。如果以后真实租户测试发现这个假设错了（就像上面 `PRD-20321 follow-up` 发现隐藏邮箱读回假设错了那样），请用同样的方式更新这条记录——追加取代，不要悄悄改写。
+- `external_audience` 的合法取值是字面字符串 `None`/`Known`/`All`（真实 Exchange 枚举）——与 Python 的 `None` 默认值（表示"字段未提供"）是两回事。调用方要显式要求该受众取值时必须传字符串 `"None"`。
+- 测试：`tests/test_mailbox_auto_reply.py`，每条 AC 一条（TC-EXO-007 至 TC-EXO-016，TC-EXO-015 覆盖两个工具的未找到情形）。

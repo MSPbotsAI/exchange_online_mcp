@@ -192,12 +192,14 @@ def main() -> int:
         tools = rpc_result(body)["result"]["tools"]
         names = sorted(tool["name"] for tool in tools)
         check(
-            "13 exo_ tools listed",
+            "16 exo_ tools listed",
             names
             == [
+                "exo_add_distribution_group_member",
                 "exo_add_mailbox_permission",
                 "exo_add_recipient_permission",
                 "exo_convert_mailbox_to_shared",
+                "exo_get_auto_reply",
                 "exo_get_mailbox",
                 "exo_get_mailbox_permission",
                 "exo_get_recipient_permission",
@@ -206,6 +208,7 @@ def main() -> int:
                 "exo_remove_mailbox_permission",
                 "exo_remove_mobile_device",
                 "exo_remove_recipient_permission",
+                "exo_set_auto_reply",
                 "exo_set_mailbox_forwarding",
                 "exo_set_mailbox_hidden",
             ],
@@ -233,6 +236,15 @@ def main() -> int:
             (
                 "exo_remove_mobile_device",
                 {"device_id": "11111111-0000-0000-0000-000000000000"},
+            ),
+            (
+                "exo_add_distribution_group_member",
+                {"group": "all-staff@contoso.com", "member": "charlie@contoso.com"},
+            ),
+            ("exo_get_auto_reply", {"identity": "alice@contoso.com"}),
+            (
+                "exo_set_auto_reply",
+                {"identity": "alice@contoso.com", "internal_message": "Back Monday."},
             ),
             (
                 "exo_add_mailbox_permission",
@@ -302,6 +314,17 @@ def main() -> int:
                 "Remove-DistributionGroupMember",
                 "Get-MobileDevice",
                 "Remove-MobileDevice",
+                # exo_add_distribution_group_member: classify group type, check
+                # existing membership, then add (the mocked member list does not
+                # include "charlie", so this is the new-member path).
+                "Get-Recipient",
+                "Get-DistributionGroupMember",
+                "Add-DistributionGroupMember",
+                # exo_get_auto_reply
+                "Get-MailboxAutoReplyConfiguration",
+                # exo_set_auto_reply: write, then exactly one read-back.
+                "Set-MailboxAutoReplyConfiguration",
+                "Get-MailboxAutoReplyConfiguration",
                 "Add-MailboxPermission",
                 "Get-MailboxPermission",
                 "Remove-MailboxPermission",

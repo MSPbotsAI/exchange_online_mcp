@@ -42,6 +42,47 @@ def _scalarize(value: object) -> object:
     return value
 
 
+# PRD-20394: the three group types Add-DistributionGroupMember cannot manage.
+# Checked via a precondition Get-Recipient read rather than parsed from the
+# cmdlet's own error text — no confirmed wording exists for two of these three
+# cases (see docs/tickets/PRD-20394.md § Tech design, Option analysis).
+_DYNAMIC_GROUP_TYPE = "DynamicDistributionGroup"
+_MICROSOFT_365_GROUP_TYPE = "GroupMailbox"
+
+
+def classify_group_restriction(
+    recipient_type_details: str | None, is_dir_synced: bool
+) -> tuple[str, str] | None:
+    """(code, message) if this recipient's group type cannot have its
+    membership changed through this tool, else None.
+
+    Order matters when more than one condition could apply: on-premises sync
+    is checked first because a synced object's `RecipientTypeDetails` can
+    still read as an ordinary distribution-group type even though it is not
+    locally writable — the sync flag is the more specific signal.
+    """
+    if is_dir_synced:
+        return (
+            "directory_synced_group_unsupported",
+            "this group is synchronized from the on-premises organization; manage its "
+            "membership on-premises — changes sync to Exchange Online automatically",
+        )
+    if recipient_type_details == _DYNAMIC_GROUP_TYPE:
+        return (
+            "dynamic_group_unsupported",
+            "this is a dynamic distribution group; membership is computed from rules "
+            "(Set-DynamicDistributionGroup), not static membership — this tool cannot "
+            "add members to it",
+        )
+    if recipient_type_details == _MICROSOFT_365_GROUP_TYPE:
+        return (
+            "microsoft_365_group_unsupported",
+            "this is a Microsoft 365 Group; its membership is owned by Microsoft Graph, "
+            "not Exchange — use a Graph MCP server to manage it",
+        )
+    return None
+
+
 def parse_size_bytes(size: object) -> int | None:
     """Read a byte count out of an Exchange size string.
 
