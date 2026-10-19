@@ -32,3 +32,13 @@
 - `{"Add": [...]}` 这种线上格式是本文件第一次用到多值 Add/Remove 类的 cmdlet 参数——之前所有 `Set-Mailbox` 工具设的都是标量属性。还没有在真实 EXO REST 端点上验证过（设计文档自己的 Option analysis 里标出来了，对应 TC-EXO-004）；如果哪天被拒绝，文档里给的后备方案是靠 `exo_get_mailbox` 读出全量列表再 `Set-Mailbox` 整体写回，这次没有实现，因为增量写法目前还没确认过失败。
 - 测试覆盖：`tests/test_tool_calls.py::test_add_email_alias_adds_multiple_without_disturbing_existing`、`::test_add_email_alias_rejects_address_in_use_elsewhere`、`::test_add_email_alias_rejects_empty_list_without_calling_exchange`、`::test_add_email_alias_not_found`（均为本单新增，在 `3ec7afb` 上全部通过）。
 - 自动化测试未覆盖的部分（需要真实租户——见 `docs/tickets/PRD-20480.md` § 自测，TC-EXO-004）：真实 EXO REST 端点是否真的原样接受 `{"Add": [...]}` 这种格式，还是需要走读-合并-写回的后备方案。
+
+## PRD-20480-r2 · 2026-10-19（取代上面的 PRD-20480 记录）
+
+- 真实租户 INT 测试（comment `90170264109063`，Minnie Zhou，2026-10-19）回答了上面那条记录标出的开放问题：真实 EXO REST 端点**确实拒绝** `{"Add": [...]}` 这种线上格式，报 `invalid_argument "Invalid Operation"`。`exo_add_email_alias`（`src/exo_mcp/tools/mailbox.py` @ `a43db49`）现在用文档里早就写好的后备方案：先 `Get-Mailbox` 读当前 `EmailAddresses`，对每个候选地址做前置 `Get-Recipient` 校验（解析不到 → 可用；解析到本邮箱自己 → `already_present`；解析到别处 → `in_use_by_other`），只把新地址合并进完整列表、用一次 `Set-Mailbox` 写回，再 `Get-Mailbox` 回读一次确定 `verified`。
+- 原来"带 `:` 的地址原样发出"的前缀处理被去掉了——这正是真实租户暴露的那个 bug 本身：带 `"SMTP:"` 前缀的地址会悄悄改掉邮箱的主地址。现在只接受纯地址或显式小写 `"smtp:"` 前缀；其它任何前缀都会按地址逐条拒绝为 `invalid`，不会转发给 Exchange（见新增的 `_invalid_alias_prefix`，在 `mailbox.py` 里）。
+- 返回形状从单一的 `accepted`/`verified` 布尔值对，变成逐地址的 `results: [{"address", "result": "added"|"already_present"|"in_use_by_other"|"invalid", "message"?}]` 数组——这正是 AC5 "部分成功"那句话一直要求的东西，只是修复前的实现一旦碰上 Exchange 的一个错误就只能整体成功或整体失败。
+- `exo_get_mailbox` 的 `_MAILBOX_FIELDS` 现在也投影 `EmailAddresses`→`email_addresses` 与 `GrantSendOnBehalfTo`→`grant_send_on_behalf_to`——此前两个写工具都说"用 exo_get_mailbox 确认"，却没有可确认的字段。
+- 新增共享辅助函数 `contains_case_insensitive`（`src/exo_mcp/tools/_common.py`），供这个工具与 `exo_add_sendonbehalf_permission`（`permissions.py`）的合并/去重逻辑共用。
+- 测试覆盖：`tests/test_tool_calls.py::test_add_email_alias_adds_multiple_without_disturbing_existing` 与 `::test_add_email_alias_rejects_address_in_use_elsewhere` 因新调用序列改写（判定句不变，mocked cmdlet 变了）；新增：`::test_add_email_alias_already_present_is_a_no_op`、`::test_add_email_alias_rejects_uppercase_smtp_prefix`、`::test_add_email_alias_rejects_other_prefixes`、`::test_add_email_alias_partial_success_writes_only_valid_addresses`、`::test_get_mailbox_reports_email_addresses_and_sendonbehalf`。
+- 自动化测试仍未覆盖的部分（需要真实租户——见 `docs/tickets/PRD-20480-r2.md` § 自测，TC-EXO-013）：新的读取-合并-写回兜底方案本身在真实租户上能否正确往返。没有编造成"已通过"。
