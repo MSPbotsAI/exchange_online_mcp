@@ -17,3 +17,10 @@
 - 从 `mailbox.py` 导入 `_read_mailbox`，而不是重复实现第二个 `Get-Mailbox` 投影辅助函数——这是本仓这两个工具模块之间第一次跨文件导入。
 - 测试覆盖：`tests/test_tool_calls.py::test_add_sendonbehalf_permission_grants_delegate` 因新调用序列改写（判定句不变，mocked cmdlet 变了）；`::test_add_sendonbehalf_permission_not_found` 现在由 `Get-Mailbox` 触发，不再是 `Set-Mailbox`（D1 是先读后写）；新增：`::test_add_sendonbehalf_permission_already_present_skips_write`、`::test_add_sendonbehalf_permission_rejects_delegate_that_does_not_exist`、`::test_add_sendonbehalf_permission_merges_into_existing_list`。
 - 自动化测试仍未覆盖的部分（需要真实租户——见 `docs/tickets/PRD-20480-r2.md` § 自测，TC-EXO-013）：新的读取-合并-写回兜底方案本身在真实租户上能否正确往返，以及 comment 里提到的 `2qmxyw` 没有共享邮箱是否会影响复测。没有编造成"已通过"。
+
+## PRD-20480-r3 · 2026-10-19（取代上面的 PRD-20480-r2 记录）
+
+- 第二轮 INT 测试（comment `90170264132422`，Minnie Zhou，2026-10-19）发现复制窗口内重复调用 `exo_add_sendonbehalf_permission` 第二次仍然报 `added`，而不是 `already_present`。根因：写入复制完成后，EXO 把 `GrantSendOnBehalfTo` 的条目存成委托人的 object id（INT 实测是类似 `c1dcd1cd-...` 的 GUID），但 already_present 判断（修复前 `:171-175`）只比对了原始 `delegate` 字符串、`Get-Recipient` 的 `Identity`、以及它的 `PrimarySmtpAddress`——从未比对过这个 id。已修复（N3，`src/exo_mcp/tools/permissions.py` @ `0600f42`）：判断现在还会把 `Get-Recipient` 的 `ExternalDirectoryObjectId` 拿去跟当前列表比对。
+- 工具 docstring（N3 + N4）现在说明：复制窗口内的重复调用可能仍报 `added`，对同一邮箱的下一次写入应等待复制完成或先用 `exo_get_mailbox` 确认。加上这句提示后，这个工具与 `mailbox.py` 的 `exo_add_email_alias` 的描述都需要重新裁剪，才能满足本仓 `test_tools_list_snapshot` 的 500 字符上限（`tests/test_tools.py:69`）。
+- 测试覆盖：`tests/test_tool_calls.py::test_add_sendonbehalf_permission_already_present_by_object_id`（新增，N3）。
+- 仍未在真实租户的实际复制时序上独立验证过（需要真实租户——见 `docs/tickets/PRD-20480-r3.md` § 自测，TC-EXO-017）：单元测试证明的是比对逻辑本身，不是真实世界的竞态窗口。本沙箱没有可用的 EXO 凭据。
