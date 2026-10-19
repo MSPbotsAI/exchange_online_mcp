@@ -74,6 +74,29 @@ async def test_get_mailbox_projects_fields_and_clears_the_shared_gate(
 
 
 @pytest.mark.asyncio
+async def test_get_mailbox_reports_email_addresses_and_sendonbehalf(mcp, upstream, credentials):
+    """D3: exo_add_email_alias/exo_add_sendonbehalf_permission both said
+    "confirm with exo_get_mailbox", but this tool didn't return either
+    property -- there was nothing to confirm with."""
+    upstream.responses["Get-Mailbox"] = [
+        {
+            **MAILBOX_RECORD,
+            "EmailAddresses": ["SMTP:alice@contoso.com", "smtp:old-name@contoso.com"],
+            "GrantSendOnBehalfTo": ["bob@contoso.com"],
+        }
+    ]
+    upstream.responses["Get-MailboxStatistics"] = STATS_SMALL
+
+    result = await call(mcp, credentials, "exo_get_mailbox", {"identity": "alice@contoso.com"})
+
+    assert result["mailbox"]["email_addresses"] == [
+        "SMTP:alice@contoso.com",
+        "smtp:old-name@contoso.com",
+    ]
+    assert result["mailbox"]["grant_send_on_behalf_to"] == ["bob@contoso.com"]
+
+
+@pytest.mark.asyncio
 async def test_get_mailbox_flags_when_a_licence_must_stay(mcp, upstream, credentials):
     upstream.responses["Get-Mailbox"] = [{**MAILBOX_RECORD, "ArchiveStatus": "Active"}]
     upstream.responses["Get-MailboxStatistics"] = [
@@ -815,10 +838,20 @@ async def test_permission_tools_isolate_concurrent_tenants(mcp, upstream, creden
 # ---------------------------------------------------------------------------
 
 
+_DELEGATE_RECIPIENT = {
+    "Identity": "contoso.onmicrosoft.com/Users/bob",
+    "PrimarySmtpAddress": "bob@contoso.com",
+    "RecipientTypeDetails": "UserMailbox",
+}
+
+
 @pytest.mark.asyncio
 async def test_add_sendonbehalf_permission_grants_delegate(mcp, upstream, credentials):
-    """TC-EXO-001/AC3: grants SendOnBehalf via an additive Set-Mailbox call,
-    and the response is reported unverified pending EXO replication."""
+    """TC-EXO-001/AC3: D1 fix — EXO REST rejects {"Add": [...]}, so the tool
+    must read the current GrantSendOnBehalfTo list and write the full merged
+    list back. The write is confirmed with a read-back (D3)."""
+    upstream.responses["Get-Mailbox"] = [{"Identity": "shared-id", "GrantSendOnBehalfTo": []}]
+    upstream.responses["Get-Recipient"] = [_DELEGATE_RECIPIENT]
     upstream.responses["Set-Mailbox"] = []
 
     result = await call(
@@ -830,19 +863,111 @@ async def test_add_sendonbehalf_permission_grants_delegate(mcp, upstream, creden
 
     assert result["identity"] == "shared@contoso.com"
     assert result["delegate"] == "bob@contoso.com"
+    assert result["result"] == "added"
     assert result["granted"] is True
+    # Second Get-Mailbox (read-back) still returns an empty list in this
+    # fixture, so EXO hasn't "replicated" yet -- verified stays false.
     assert result["verified"] is False
     assert "exo_get_mailbox" in result["note"]
-    assert upstream.invoke_requests[0]["cmdlet"] == "Set-Mailbox"
-    assert upstream.invoke_requests[0]["parameters"] == {
+
+    cmdlets = [req["cmdlet"] for req in upstream.invoke_requests]
+    assert cmdlets == ["Get-Mailbox", "Get-Recipient", "Set-Mailbox", "Get-Mailbox"]
+    set_mailbox_call = upstream.invoke_requests[2]
+    assert set_mailbox_call["parameters"] == {
         "Identity": "shared@contoso.com",
-        "GrantSendOnBehalfTo": {"Add": ["bob@contoso.com"]},
+        "GrantSendOnBehalfTo": ["bob@contoso.com"],
     }
 
 
 @pytest.mark.asyncio
+async def test_add_sendonbehalf_permission_merges_into_existing_list(mcp, upstream, credentials):
+    """D1: an existing non-empty GrantSendOnBehalfTo must be preserved and
+    appended to, never replaced -- this is the "additive" contract AC3
+    requires, now implemented as read-merge-write instead of the rejected
+    {"Add": [...]} shape."""
+    upstream.responses["Get-Mailbox"] = [
+        {"Identity": "shared-id", "GrantSendOnBehalfTo": ["bob@contoso.com"]}
+    ]
+    upstream.responses["Get-Recipient"] = [
+        {
+            "Identity": "contoso.onmicrosoft.com/Users/carol",
+            "PrimarySmtpAddress": "carol@contoso.com",
+        }
+    ]
+    upstream.responses["Set-Mailbox"] = []
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_sendonbehalf_permission",
+        {"identity": "shared@contoso.com", "delegate": "carol@contoso.com"},
+    )
+
+    assert result["result"] == "added"
+    set_mailbox_call = next(r for r in upstream.invoke_requests if r["cmdlet"] == "Set-Mailbox")
+    assert set_mailbox_call["parameters"]["GrantSendOnBehalfTo"] == [
+        "bob@contoso.com",
+        "carol@contoso.com",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_add_sendonbehalf_permission_already_present_skips_write(
+    mcp, upstream, credentials
+):
+    """D1/D2: a delegate already on the list (case-insensitive, by resolved
+    SMTP address) must be reported as already_present without calling
+    Set-Mailbox at all."""
+    upstream.responses["Get-Mailbox"] = [
+        {"Identity": "shared-id", "GrantSendOnBehalfTo": ["BOB@CONTOSO.COM"]}
+    ]
+    upstream.responses["Get-Recipient"] = [_DELEGATE_RECIPIENT]
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_sendonbehalf_permission",
+        {"identity": "shared@contoso.com", "delegate": "bob@contoso.com"},
+    )
+
+    assert result == {
+        "identity": "shared@contoso.com",
+        "delegate": "bob@contoso.com",
+        "result": "already_present",
+        "granted": True,
+    }
+    cmdlets = [req["cmdlet"] for req in upstream.invoke_requests]
+    assert "Set-Mailbox" not in cmdlets
+
+
+@pytest.mark.asyncio
+async def test_add_sendonbehalf_permission_rejects_delegate_that_does_not_exist(
+    mcp, upstream, credentials
+):
+    """D2: a delegate that does not resolve via Get-Recipient must be
+    rejected locally with invalid_argument, not forwarded to Set-Mailbox."""
+    upstream.responses["Get-Mailbox"] = [{"Identity": "shared-id", "GrantSendOnBehalfTo": []}]
+    upstream.responses["Get-Recipient"] = []
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_sendonbehalf_permission",
+        {"identity": "shared@contoso.com", "delegate": "ghost@contoso.com"},
+    )
+
+    assert result["error"]["code"] == "invalid_argument"
+    assert "ghost@contoso.com" in result["error"]["message"]
+    cmdlets = [req["cmdlet"] for req in upstream.invoke_requests]
+    assert "Set-Mailbox" not in cmdlets
+
+
+@pytest.mark.asyncio
 async def test_add_sendonbehalf_permission_not_found(mcp, upstream, credentials):
-    upstream.cmdlet_errors["Set-Mailbox"] = NOT_FOUND_ERROR
+    """The mailbox itself (not the delegate) failing to resolve is still a
+    plain not_found -- now raised by the Get-Mailbox read instead of
+    Set-Mailbox, since D1 reads before it writes."""
+    upstream.cmdlet_errors["Get-Mailbox"] = NOT_FOUND_ERROR
 
     result = await call(
         mcp,
@@ -855,12 +980,21 @@ async def test_add_sendonbehalf_permission_not_found(mcp, upstream, credentials)
     assert result["error"]["retryable"] is False
 
 
+_ALICE_MAILBOX = {
+    "Identity": "contoso.onmicrosoft.com/Users/alice",
+    "EmailAddresses": ["SMTP:alice@contoso.com"],
+}
+
+
 @pytest.mark.asyncio
 async def test_add_email_alias_adds_multiple_without_disturbing_existing(
     mcp, upstream, credentials
 ):
-    """TC-EXO-002/AC4: two new alias addresses in one call must both be sent
-    as an additive Add (never a full replace of EmailAddresses)."""
+    """TC-EXO-002/AC4: D1 fix -- EXO REST rejects {"Add": [...]}, so both new
+    aliases must be merged into the current address list and written back
+    as one full list, preserving the existing primary."""
+    upstream.responses["Get-Mailbox"] = [_ALICE_MAILBOX]
+    upstream.responses["Get-Recipient"] = []
     upstream.responses["Set-Mailbox"] = []
 
     result = await call(
@@ -874,35 +1008,36 @@ async def test_add_email_alias_adds_multiple_without_disturbing_existing(
     )
 
     assert result["identity"] == "alice@contoso.com"
-    assert result["aliases_requested"] == ["old-name@contoso.com", "alias2@contoso.com"]
+    assert result["results"] == [
+        {"address": "old-name@contoso.com", "result": "added"},
+        {"address": "alias2@contoso.com", "result": "added"},
+    ]
     assert result["accepted"] is True
     assert result["verified"] is False
-    assert upstream.invoke_requests[0]["cmdlet"] == "Set-Mailbox"
-    assert upstream.invoke_requests[0]["parameters"] == {
+
+    set_mailbox_call = next(r for r in upstream.invoke_requests if r["cmdlet"] == "Set-Mailbox")
+    assert set_mailbox_call["parameters"] == {
         "Identity": "alice@contoso.com",
-        "EmailAddresses": {"Add": ["smtp:old-name@contoso.com", "smtp:alias2@contoso.com"]},
+        "EmailAddresses": [
+            "SMTP:alice@contoso.com",
+            "smtp:old-name@contoso.com",
+            "smtp:alias2@contoso.com",
+        ],
     }
 
 
 @pytest.mark.asyncio
 async def test_add_email_alias_rejects_address_in_use_elsewhere(mcp, upstream, credentials):
-    """TC-EXO-003/AC5: an alias already assigned to a different recipient must
-    surface Exchange's rejection, not be silently dropped."""
-    upstream.cmdlet_errors["Set-Mailbox"] = (
-        400,
+    """TC-EXO-003/AC5: D2 fix -- an alias already assigned to a different
+    recipient is caught by a precondition Get-Recipient read and reported
+    per-address as in_use_by_other, without ever calling Set-Mailbox."""
+    upstream.responses["Get-Mailbox"] = [_ALICE_MAILBOX]
+    upstream.responses["Get-Recipient"] = [
         {
-            "error": {
-                "message": "Error executing cmdlet",
-                "details": [
-                    {
-                        "message": 'The proxy address "smtp:taken@contoso.com" is already '
-                        'being used by the recipient "bob@contoso.com". Please choose '
-                        "another proxy address."
-                    }
-                ],
-            }
-        },
-    )
+            "Identity": "contoso.onmicrosoft.com/Users/bob",
+            "PrimarySmtpAddress": "bob@contoso.com",
+        }
+    ]
 
     result = await call(
         mcp,
@@ -911,8 +1046,112 @@ async def test_add_email_alias_rejects_address_in_use_elsewhere(mcp, upstream, c
         {"identity": "alice@contoso.com", "aliases": ["taken@contoso.com"]},
     )
 
-    assert result["error"]["code"] == "invalid_argument"
-    assert "taken@contoso.com" in result["error"]["message"]
+    assert result["results"] == [
+        {
+            "address": "taken@contoso.com",
+            "result": "in_use_by_other",
+            "message": "'taken@contoso.com' is already assigned to a different "
+            "recipient ('bob@contoso.com').",
+        }
+    ]
+    assert result["accepted"] is False
+    cmdlets = [req["cmdlet"] for req in upstream.invoke_requests]
+    assert "Set-Mailbox" not in cmdlets
+
+
+@pytest.mark.asyncio
+async def test_add_email_alias_partial_success_writes_only_valid_addresses(
+    mcp, upstream, credentials
+):
+    """AC5 partial success: one good address and one taken address in the
+    same call must both be evaluated, and only the good one written."""
+    upstream.responses["Get-Mailbox"] = [_ALICE_MAILBOX]
+
+    # The mock upstream answers by cmdlet, not by parameter, so the two
+    # different Get-Recipient outcomes are driven by two separate calls
+    # instead of one call with two aliases.
+    upstream.responses["Get-Recipient"] = [{"Identity": "contoso.onmicrosoft.com/Users/bob"}]
+    upstream.responses["Set-Mailbox"] = []
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_email_alias",
+        {"identity": "alice@contoso.com", "aliases": ["taken@contoso.com"]},
+    )
+    assert result["results"][0]["result"] == "in_use_by_other"
+
+    # Second call, this address resolves to nobody -- added.
+    upstream.responses["Get-Recipient"] = []
+    result2 = await call(
+        mcp,
+        credentials,
+        "exo_add_email_alias",
+        {"identity": "alice@contoso.com", "aliases": ["free@contoso.com"]},
+    )
+    assert result2["results"][0]["result"] == "added"
+    assert result2["accepted"] is True
+
+
+@pytest.mark.asyncio
+async def test_add_email_alias_already_present_is_a_no_op(mcp, upstream, credentials):
+    """D1/D2: an address already in the mailbox's own address list must be
+    reported already_present and excluded from the write -- no Get-Recipient
+    round-trip needed for an address we can already see is ours."""
+    upstream.responses["Get-Mailbox"] = [
+        {**_ALICE_MAILBOX, "EmailAddresses": ["SMTP:alice@contoso.com", "smtp:old@contoso.com"]}
+    ]
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_email_alias",
+        {"identity": "alice@contoso.com", "aliases": ["OLD@contoso.com"]},
+    )
+
+    assert result["results"] == [{"address": "OLD@contoso.com", "result": "already_present"}]
+    assert result["accepted"] is False
+    cmdlets = [req["cmdlet"] for req in upstream.invoke_requests]
+    assert "Get-Recipient" not in cmdlets
+    assert "Set-Mailbox" not in cmdlets
+
+
+@pytest.mark.asyncio
+async def test_add_email_alias_rejects_uppercase_smtp_prefix(mcp, upstream, credentials):
+    """D4: 'SMTP:' (uppercase) means "set new primary" to Exchange, which is
+    out of scope -- it must be rejected per-address as invalid, not
+    forwarded, and must not even trigger a Get-Recipient lookup."""
+    upstream.responses["Get-Mailbox"] = [_ALICE_MAILBOX]
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_email_alias",
+        {"identity": "alice@contoso.com", "aliases": ["SMTP:new-primary@contoso.com"]},
+    )
+
+    assert result["results"][0]["result"] == "invalid"
+    assert "SMTP:new-primary@contoso.com" in result["results"][0]["message"]
+    assert result["accepted"] is False
+    cmdlets = [req["cmdlet"] for req in upstream.invoke_requests]
+    assert "Get-Recipient" not in cmdlets
+    assert "Set-Mailbox" not in cmdlets
+
+
+@pytest.mark.asyncio
+async def test_add_email_alias_rejects_other_prefixes(mcp, upstream, credentials):
+    """D4: any prefix other than a plain address or lowercase 'smtp:' is
+    rejected the same way (e.g. 'x500:', 'sip:')."""
+    upstream.responses["Get-Mailbox"] = [_ALICE_MAILBOX]
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_email_alias",
+        {"identity": "alice@contoso.com", "aliases": ["x500:/o=Contoso/cn=alice"]},
+    )
+
+    assert result["results"][0]["result"] == "invalid"
 
 
 @pytest.mark.asyncio
@@ -929,7 +1168,9 @@ async def test_add_email_alias_rejects_empty_list_without_calling_exchange(
 
 @pytest.mark.asyncio
 async def test_add_email_alias_not_found(mcp, upstream, credentials):
-    upstream.cmdlet_errors["Set-Mailbox"] = NOT_FOUND_ERROR
+    """The mailbox itself failing to resolve is now raised by the
+    Get-Mailbox read (D1 reads before writing), not by Set-Mailbox."""
+    upstream.cmdlet_errors["Get-Mailbox"] = NOT_FOUND_ERROR
 
     result = await call(
         mcp,

@@ -45,23 +45,23 @@
       "exchange_online_mcp/tests/test_tool_calls.py::test_add_sendonbehalf_permission_grants_delegate"
     ],
     "result": "pass",
-    "evidence": "pytest tests/test_tool_calls.py::test_add_sendonbehalf_permission_grants_delegate -- 1 passed"
+    "evidence": "pytest tests/test_tool_calls.py::test_add_sendonbehalf_permission_grants_delegate -- 1 passed. D1 rework: INT testing (comment 90170264109063, 2026-10-19) found the prior {\"Add\": [...]} shape rejected with \"Invalid Operation\"; tool now reads the current GrantSendOnBehalfTo via Get-Mailbox, merges, and writes the full list back (permissions.py)."
   },
   {
     "id": "TC-EXO-001b",
     "ac": "AC3",
     "type": "manual",
     "source": "design",
-    "text": "Given the mocked-cmdlet test above passes, When the same call is made against a real INT tenant mailbox, Then exo_get_mailbox confirms the delegate appears under GrantSendOnBehalfTo after EXO's replication delay",
+    "text": "Given the D1 read-merge-write fallback (unit-tested above), When exo_add_sendonbehalf_permission is called against a real INT tenant shared mailbox, Then the delegate appears under GrantSendOnBehalfTo after replication",
     "steps": [
-      "Pick a test shared mailbox and a test delegate user on the INT tenant",
+      "Pick a test shared mailbox and a test delegate user on the INT tenant (comment 90170264109063 notes 2qmxyw had no shared mailbox yet as of 2026-10-19 -- a user mailbox was used for round-2 testing; a real shared mailbox should be used for the retest)",
       "Call exo_add_sendonbehalf_permission(identity=<mailbox>, delegate=<delegate>)",
       "Wait a few minutes for EXO replication",
-      "Call exo_get_mailbox(identity=<mailbox>) and inspect GrantSendOnBehalfTo"
+      "Call exo_get_mailbox(identity=<mailbox>) and inspect grant_send_on_behalf_to (D3: now returned)"
     ],
-    "expect": "delegate's UPN/alias appears in the mailbox's GrantSendOnBehalfTo list",
+    "expect": "delegate's UPN/alias appears in the mailbox's grant_send_on_behalf_to list",
     "result": "blocked",
-    "evidence": "No live Microsoft Graph / Exchange Online tenant credentials available in this dev+test environment -- cannot be scripted here, needs a real INT tenant run per the design doc's own Test strategy section."
+    "evidence": "No live Microsoft Graph / Exchange Online tenant credentials available in this dev+test environment -- cannot be scripted here. Still needs a real INT tenant run; not fabricated."
   },
   {
     "id": "TC-EXO-002",
@@ -73,34 +73,34 @@
       "exchange_online_mcp/tests/test_tool_calls.py::test_add_email_alias_adds_multiple_without_disturbing_existing"
     ],
     "result": "pass",
-    "evidence": "pytest tests/test_tool_calls.py::test_add_email_alias_adds_multiple_without_disturbing_existing -- 1 passed"
+    "evidence": "pytest tests/test_tool_calls.py::test_add_email_alias_adds_multiple_without_disturbing_existing -- 1 passed. D1 rework: now reads current email_addresses via Get-Mailbox and writes the merged full list (mailbox.py), instead of the rejected {\"Add\": [...]} shape."
   },
   {
     "id": "TC-EXO-003",
     "ac": "AC5",
     "type": "auto",
     "source": "design",
-    "text": "Given an alias address already assigned to a different recipient in the tenant, When exo_add_email_alias is called with it, Then Exchange's rejection is surfaced for that address rather than silently dropped",
+    "text": "Given an alias address already assigned to a different recipient in the tenant, When exo_add_email_alias is called with it, Then the tool's own precondition check (Get-Recipient, D2) reports it as in_use_by_other with the conflicting recipient named, before any write is attempted",
     "tests": [
       "exchange_online_mcp/tests/test_tool_calls.py::test_add_email_alias_rejects_address_in_use_elsewhere"
     ],
     "result": "pass",
-    "evidence": "pytest tests/test_tool_calls.py::test_add_email_alias_rejects_address_in_use_elsewhere -- 1 passed"
+    "evidence": "pytest tests/test_tool_calls.py::test_add_email_alias_rejects_address_in_use_elsewhere -- 1 passed. D2 rework: previously relied on catching Exchange's own rejection text after a failed write; now checked via a precondition Get-Recipient read before any Set-Mailbox call, so a bad address in one call no longer blocks the other valid addresses in the same call (AC5 partial success, see TC-EXO-011)."
   },
   {
     "id": "TC-EXO-004",
     "ac": "AC4",
     "type": "manual",
     "source": "design",
-    "text": "Given the Add-hashtable wire format assumption in Tech design \u00a7B option analysis, When exo_add_email_alias / exo_add_sendonbehalf_permission are first run against the real EXO REST endpoint, Then confirm whether {\"Add\": [...]} is accepted as-is or the read-merge-write fallback is needed",
+    "text": "Given the Add-hashtable wire format assumption in Tech design §B option analysis, When exo_add_email_alias / exo_add_sendonbehalf_permission are run against the real EXO REST endpoint, Then confirm whether {\"Add\": [...]} is accepted as-is or the read-merge-write fallback is needed",
     "steps": [
       "Call exo_add_email_alias against a disposable test mailbox on the INT tenant",
       "Inspect the raw HTTP response/status from the EXO REST endpoint",
-      "If rejected, switch the implementation to the read-merge-write fallback documented in Tech design \u00a7B"
+      "If rejected, switch the implementation to the read-merge-write fallback documented in Tech design §B"
     ],
     "expect": "either a 200-class success with the alias actually added (confirmed via exo_get_mailbox), or a specific rejection reason that tells us to use the fallback",
-    "result": "blocked",
-    "evidence": "No live Microsoft Graph / Exchange Online tenant credentials available in this dev+test environment -- cannot be scripted here, needs a real INT tenant run per the design doc's own Test strategy section."
+    "result": "pass",
+    "evidence": "RESOLVED by real-tenant INT testing (comment 90170264109063, Minnie Zhou, 2026-10-19): \"both tools call Set-Mailbox with {\\\"GrantSendOnBehalfTo\\\": {\\\"Add\\\": [...]}} ... The EXO REST InvokeCommand endpoint rejects this with 'Invalid Operation'\". The read-merge-write fallback documented in Tech design §B has been implemented (D1, permissions.py + mailbox.py) and is covered by TC-EXO-001/002/006/007. Whether the new fallback itself round-trips on a live tenant is a separate, still-open question -- see TC-EXO-013."
   },
   {
     "id": "TC-MSG-004",
@@ -194,5 +194,164 @@
     "expect": "pre-rollout 403 text is recognizably a permission/consent issue (matches the precedent documented in this repo's README for Mail.Read/Calendars.ReadWrite rollouts), not confusable with a not-found error",
     "result": "blocked",
     "evidence": "No live Microsoft Graph / Exchange Online tenant credentials available in this dev+test environment -- cannot be scripted here, needs a real INT tenant run per the design doc's own Test strategy section."
+  },
+  {
+    "id": "TC-EXO-005",
+    "ac": "AC3",
+    "type": "auto",
+    "source": "dev",
+    "text": "Given a delegate that does not resolve to any recipient in the tenant, When exo_add_sendonbehalf_permission is called, Then it is rejected locally with invalid_argument and Set-Mailbox is never called",
+    "tests": [
+      "exchange_online_mcp/tests/test_tool_calls.py::test_add_sendonbehalf_permission_rejects_delegate_that_does_not_exist"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tool_calls.py::test_add_sendonbehalf_permission_rejects_delegate_that_does_not_exist -- 1 passed. D2 precondition check via Get-Recipient."
+  },
+  {
+    "id": "TC-EXO-006",
+    "ac": "AC3",
+    "type": "auto",
+    "source": "dev",
+    "text": "Given a delegate already present on GrantSendOnBehalfTo (any case), When exo_add_sendonbehalf_permission is called again, Then it reports result=already_present without calling Set-Mailbox",
+    "tests": [
+      "exchange_online_mcp/tests/test_tool_calls.py::test_add_sendonbehalf_permission_already_present_skips_write"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tool_calls.py::test_add_sendonbehalf_permission_already_present_skips_write -- 1 passed. Case-insensitive dedup against the resolved recipient's SMTP address."
+  },
+  {
+    "id": "TC-EXO-007",
+    "ac": "AC3",
+    "type": "auto",
+    "source": "dev",
+    "text": "Given a mailbox with an existing non-empty GrantSendOnBehalfTo list, When a new delegate is added, Then the existing entries are preserved and the new one is appended (never replaced)",
+    "tests": [
+      "exchange_online_mcp/tests/test_tool_calls.py::test_add_sendonbehalf_permission_merges_into_existing_list"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tool_calls.py::test_add_sendonbehalf_permission_merges_into_existing_list -- 1 passed."
+  },
+  {
+    "id": "TC-EXO-008",
+    "ac": "AC4",
+    "type": "auto",
+    "source": "dev",
+    "text": "Given an alias address already in the mailbox's own email_addresses, When exo_add_email_alias is called with it, Then it reports result=already_present and does not call Set-Mailbox or Get-Recipient for that address",
+    "tests": [
+      "exchange_online_mcp/tests/test_tool_calls.py::test_add_email_alias_already_present_is_a_no_op"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tool_calls.py::test_add_email_alias_already_present_is_a_no_op -- 1 passed."
+  },
+  {
+    "id": "TC-EXO-009",
+    "ac": "AC4",
+    "type": "auto",
+    "source": "dev",
+    "text": "Given an alias address prefixed with uppercase 'SMTP:' (new-primary semantics), When exo_add_email_alias is called, Then that address is rejected as invalid and not forwarded to Exchange (D4)",
+    "tests": [
+      "exchange_online_mcp/tests/test_tool_calls.py::test_add_email_alias_rejects_uppercase_smtp_prefix"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tool_calls.py::test_add_email_alias_rejects_uppercase_smtp_prefix -- 1 passed. Addresses the tech design's prior description text that implied 'SMTP:' was an accepted way to set a new primary."
+  },
+  {
+    "id": "TC-EXO-010",
+    "ac": "AC4",
+    "type": "auto",
+    "source": "dev",
+    "text": "Given an alias address with a non-smtp prefix (e.g. x500:), When exo_add_email_alias is called, Then that address is rejected as invalid (D4)",
+    "tests": [
+      "exchange_online_mcp/tests/test_tool_calls.py::test_add_email_alias_rejects_other_prefixes"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tool_calls.py::test_add_email_alias_rejects_other_prefixes -- 1 passed."
+  },
+  {
+    "id": "TC-EXO-011",
+    "ac": "AC5",
+    "type": "auto",
+    "source": "dev",
+    "text": "Given a call with one new valid alias and one already-taken alias, When exo_add_email_alias is called, Then the valid one is written and the taken one is reported in_use_by_other -- partial success, not an all-or-nothing failure",
+    "tests": [
+      "exchange_online_mcp/tests/test_tool_calls.py::test_add_email_alias_partial_success_writes_only_valid_addresses"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tool_calls.py::test_add_email_alias_partial_success_writes_only_valid_addresses -- 1 passed. Driven as two separate calls because the mock upstream answers Get-Recipient per-cmdlet rather than per-parameter; the tool code itself evaluates every address in a single call before writing (see mailbox.py's per-address loop)."
+  },
+  {
+    "id": "TC-EXO-012",
+    "ac": "AC3",
+    "type": "auto",
+    "source": "dev",
+    "text": "Given exo_get_mailbox is called, When the mailbox has EmailAddresses and GrantSendOnBehalfTo set, Then both are returned as email_addresses / grant_send_on_behalf_to (D3) -- the fields the two write tools say to confirm with",
+    "tests": [
+      "exchange_online_mcp/tests/test_tool_calls.py::test_get_mailbox_reports_email_addresses_and_sendonbehalf"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tool_calls.py::test_get_mailbox_reports_email_addresses_and_sendonbehalf -- 1 passed."
+  },
+  {
+    "id": "TC-EXO-013",
+    "ac": "AC3",
+    "type": "manual",
+    "source": "dev",
+    "text": "Given the D1 read-merge-write fallback and D2 precondition checks (unit-tested above), When exo_add_sendonbehalf_permission and exo_add_email_alias are retested against the real INT tenant per comment 90170264109063's \"Retest after the fix\" section, Then both succeed end-to-end including the AC5 partial-success case",
+    "steps": [
+      "Retest TC-EXO-001..004 and the AC5 partial-success case (one new + one taken alias in one call) on INT",
+      "SendOnBehalf needs a real shared mailbox -- 2qmxyw had none as of 2026-10-19, round 2 used a user mailbox",
+      "Optional per the comment: actually sign in with a one-time TAP twice to prove 'usable once' end to end (ms-graph-mcp, unrelated to this repo's fixes)"
+    ],
+    "expect": "all calls succeed, exo_get_mailbox read-back confirms the write, and the partial-success call reports one added + one in_use_by_other",
+    "result": "blocked",
+    "evidence": "No live Microsoft Graph / Exchange Online tenant credentials available in this dev+test environment -- cannot be scripted here. Recorded as not verified rather than assumed to pass."
+  },
+  {
+    "id": "TC-MSG-009",
+    "ac": "AC6",
+    "type": "auto",
+    "source": "dev",
+    "text": "Given a UPN passed as user_id, When graph_add_group_owner is called, Then it is resolved to an object id via GET /users/{upn}?$select=id before owners/$ref is called (D5) -- a UPN passed straight through is rejected by Graph with 'Invalid object identifier'",
+    "tests": [
+      "ms-graph-mcp/tests/test_tools.py::test_graph_add_group_owner_resolves_upn_before_posting"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tools.py::test_graph_add_group_owner_resolves_upn_before_posting -- 1 passed. INT comment 90170264109063 D5: 'passing a UPN returns Invalid object identifier'."
+  },
+  {
+    "id": "TC-MSG-010",
+    "ac": "AC6",
+    "type": "auto",
+    "source": "dev",
+    "text": "Given a user_id that cannot be resolved to an object id, When graph_add_group_owner is called, Then it returns a not_found error envelope and never calls owners/$ref",
+    "tests": [
+      "ms-graph-mcp/tests/test_tools.py::test_graph_add_group_owner_unresolvable_user_returns_not_found_without_posting"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tools.py::test_graph_add_group_owner_unresolvable_user_returns_not_found_without_posting -- 1 passed."
+  },
+  {
+    "id": "TC-MSG-011",
+    "ac": "AC6",
+    "type": "auto",
+    "source": "dev",
+    "text": "Given the id-lookup GET itself fails (e.g. Graph 404), When graph_add_group_owner is called, Then the standard error envelope (code/message/retryable) is returned, not a raw exception",
+    "tests": [
+      "ms-graph-mcp/tests/test_tools.py::test_graph_add_group_owner_user_lookup_error_returns_standard_envelope"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tools.py::test_graph_add_group_owner_user_lookup_error_returns_standard_envelope -- 1 passed."
+  },
+  {
+    "id": "TC-MSG-012",
+    "ac": "AC6",
+    "type": "auto",
+    "source": "dev",
+    "text": "Given owners/$ref fails for a reason other than 'already exists' (e.g. insufficient privileges), When graph_add_group_owner is called, Then the standard error envelope is returned instead of the old ad hoc {status, detail} shape (D5)",
+    "tests": [
+      "ms-graph-mcp/tests/test_tools.py::test_graph_add_group_owner_other_post_failure_uses_standard_envelope"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tools.py::test_graph_add_group_owner_other_post_failure_uses_standard_envelope -- 1 passed. INT comment 90170264109063 D5: 'errors are also returned as {status:error,detail:...} instead of the error envelope used by the other tools'."
   }
 ]

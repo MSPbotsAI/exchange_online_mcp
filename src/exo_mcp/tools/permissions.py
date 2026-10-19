@@ -5,9 +5,10 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from .._json import dump_json_capped
+from .._json import dump_json_capped, error_envelope
 from ..api_client import ExoClient, ExoError
-from ._common import NO_CREDENTIALS, project
+from ._common import NO_CREDENTIALS, contains_case_insensitive, project
+from .mailbox import _read_mailbox
 
 # PRD-20480: EXO replication of a Set-Mailbox write (GrantSendOnBehalfTo) can
 # take several minutes, same caveat as mailbox.py's Set-Mailbox tools — so the
@@ -121,7 +122,8 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
         delegate: Annotated[
             str,
             Field(description="Trustee to grant SendOnBehalf to: UPN, email address, "
-                              "alias or GUID."),
+                              "alias or GUID. Must already exist as a recipient in "
+                              "this tenant."),
         ],
     ) -> str:
         """Grant a trustee SendOnBehalf on a mailbox (PRD-20480).
@@ -129,30 +131,88 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
         Different right from exo_add_mailbox_permission's FullAccess: mail
         shows as sent "on behalf of" the mailbox, not full access to it —
         the shared-mailbox "send on behalf" case. Additive: existing
-        delegates are left in place. Response is never verified: confirm
-        later with exo_get_mailbox.
+        delegates are kept (read-merge-write, not a raw Add). Delegate must
+        already be a recipient; already-granted reports already_present
+        instead of erroring. Write is confirmed with a read-back.
         """
         client = client_factory()
         if client is None:
             return NO_CREDENTIALS
 
         try:
+            mailbox = await _read_mailbox(client, identity)
+        except ExoError as exc:
+            return exc.to_envelope()
+        if mailbox is None:
+            return ExoError(
+                404, f"No mailbox found for '{identity}'", code="not_found"
+            ).to_envelope()
+
+        # D2: validate the delegate exists before writing, instead of
+        # letting Exchange reject the whole write with an undifferentiated
+        # "Invalid Operation".
+        try:
+            recipients = await client.invoke("Get-Recipient", {"Identity": delegate})
+        except ExoError as exc:
+            return exc.to_envelope()
+        if not recipients:
+            return error_envelope(
+                "invalid_argument",
+                f"'{delegate}' is not a recipient in this tenant; SendOnBehalf can "
+                "only be granted to an existing mailbox, mail user or mail-enabled "
+                "group.",
+                False,
+            )
+        delegate_record = recipients[0]
+        delegate_identity = delegate_record.get("Identity")
+        delegate_label = delegate_record.get("PrimarySmtpAddress") or delegate_identity
+
+        current = mailbox.get("grant_send_on_behalf_to") or []
+        already_present = (
+            contains_case_insensitive(current, delegate)
+            or (delegate_identity and contains_case_insensitive(current, str(delegate_identity)))
+            or (delegate_label and contains_case_insensitive(current, str(delegate_label)))
+        )
+        if already_present:
+            return dump_json_capped(
+                {
+                    "identity": identity,
+                    "delegate": delegate,
+                    "result": "already_present",
+                    "granted": True,
+                }
+            )
+
+        merged = [*current, delegate]
+        try:
             await client.invoke(
-                "Set-Mailbox",
-                {"Identity": identity, "GrantSendOnBehalfTo": {"Add": [delegate]}},
+                "Set-Mailbox", {"Identity": identity, "GrantSendOnBehalfTo": merged}
             )
         except ExoError as exc:
             return exc.to_envelope()
 
-        return dump_json_capped(
-            {
-                "identity": identity,
-                "delegate": delegate,
-                "granted": True,
-                "verified": False,
-                "note": _SENDONBEHALF_PENDING_NOTE,
-            }
-        )
+        verified = False
+        try:
+            after = await _read_mailbox(client, identity)
+        except ExoError:
+            after = None
+        if after is not None:
+            after_values = after.get("grant_send_on_behalf_to") or []
+            verified = contains_case_insensitive(after_values, delegate) or (
+                delegate_label is not None
+                and contains_case_insensitive(after_values, str(delegate_label))
+            )
+
+        result: dict = {
+            "identity": identity,
+            "delegate": delegate,
+            "result": "added",
+            "granted": True,
+            "verified": verified,
+        }
+        if not verified:
+            result["note"] = _SENDONBEHALF_PENDING_NOTE
+        return dump_json_capped(result)
 
     @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))
     async def exo_remove_mailbox_permission(
