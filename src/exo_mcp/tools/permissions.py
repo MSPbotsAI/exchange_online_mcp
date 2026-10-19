@@ -9,6 +9,17 @@ from .._json import dump_json_capped
 from ..api_client import ExoClient, ExoError
 from ._common import NO_CREDENTIALS, project
 
+# PRD-20480: EXO replication of a Set-Mailbox write (GrantSendOnBehalfTo) can
+# take several minutes, same caveat as mailbox.py's Set-Mailbox tools — so the
+# response is reported accepted-but-unverified, confirm later with
+# exo_get_mailbox.
+_SENDONBEHALF_PENDING_NOTE = (
+    "Exchange Online accepted the change, but it replicates across the "
+    "directory, which commonly takes a few minutes. Confirm with "
+    "exo_get_mailbox afterwards — until replication completes, "
+    "GrantSendOnBehalfTo may still show the previous value."
+)
+
 # PRD-20387: 6 mailbox/recipient permission tools, fixed-right wrappers around
 # the matching Add-/Remove-/Get- cmdlets. Access rights are deliberately not
 # caller-settable — FullAccess for mailbox permission, SendAs for recipient
@@ -99,6 +110,48 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
 
         return dump_json_capped(
             {"identity": identity, "user": user, "access_rights": ["FullAccess"], "granted": True}
+        )
+
+    @mcp.tool(annotations=ToolAnnotations(idempotentHint=True))
+    async def exo_add_sendonbehalf_permission(
+        identity: Annotated[
+            str,
+            Field(description="Mailbox UPN, primary SMTP address, alias or GUID."),
+        ],
+        delegate: Annotated[
+            str,
+            Field(description="Trustee to grant SendOnBehalf to: UPN, email address, "
+                              "alias or GUID."),
+        ],
+    ) -> str:
+        """Grant a trustee SendOnBehalf on a mailbox (PRD-20480).
+
+        Different right from exo_add_mailbox_permission's FullAccess: mail
+        shows as sent "on behalf of" the mailbox, not full access to it —
+        the shared-mailbox "send on behalf" case. Additive: existing
+        delegates are left in place. Response is never verified: confirm
+        later with exo_get_mailbox.
+        """
+        client = client_factory()
+        if client is None:
+            return NO_CREDENTIALS
+
+        try:
+            await client.invoke(
+                "Set-Mailbox",
+                {"Identity": identity, "GrantSendOnBehalfTo": {"Add": [delegate]}},
+            )
+        except ExoError as exc:
+            return exc.to_envelope()
+
+        return dump_json_capped(
+            {
+                "identity": identity,
+                "delegate": delegate,
+                "granted": True,
+                "verified": False,
+                "note": _SENDONBEHALF_PENDING_NOTE,
+            }
         )
 
     @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False))

@@ -25,3 +25,10 @@
 - **DateTime 的线上格式是一个未经确认的假设，不是已验证的事实**：`_parse_offset_datetime`/`_datetime_to_z`（`:69-121`）把 `StartTime`/`EndTime` 以带 `Z` 的 UTC ISO-8601 格式发给 `Set-MailboxAutoReplyConfiguration`，`_normalize_upstream_time`（`:74-93`）假设 `Get-MailboxAutoReplyConfiguration` 返回同样格式、可按 UTC 存储理解的值。两者都没有针对真实租户验证过（见 `docs/tickets/PRD-20394.md` § 技术设计，风险 #1）。如果以后真实租户测试发现这个假设错了（就像上面 `PRD-20321 follow-up` 发现隐藏邮箱读回假设错了那样），请用同样的方式更新这条记录——追加取代，不要悄悄改写。
 - `external_audience` 的合法取值是字面字符串 `None`/`Known`/`All`（真实 Exchange 枚举）——与 Python 的 `None` 默认值（表示"字段未提供"）是两回事。调用方要显式要求该受众取值时必须传字符串 `"None"`。
 - 测试：`tests/test_mailbox_auto_reply.py`，每条 AC 一条（TC-EXO-007 至 TC-EXO-016，TC-EXO-015 覆盖两个工具的未找到情形）。
+
+## PRD-20480 · 2026-10-14
+
+- 新工具 `exo_add_email_alias`（`src/exo_mcp/tools/mailbox.py` @ `3ec7afb`），放在 `exo_set_mailbox_forwarding` 之后。用增量写法 `Set-Mailbox -EmailAddresses @{Add=[...]}`——已有的主地址/别名地址不受影响；裸地址会自动补上 `smtp:` 前缀，已经带 `:` 的地址原样发出（这样调用方可以显式用 `SMTP:` 前缀设一个新的主地址）。`aliases` 为空时在本地直接拒绝，不会为一个明显有问题的请求去调用 Exchange。沿用上面 `exo_set_mailbox_hidden`/`exo_set_mailbox_forwarding` 的 `verified: false` + 复制延迟提示模式——本模块第三个带这条提醒的工具。
+- `{"Add": [...]}` 这种线上格式是本文件第一次用到多值 Add/Remove 类的 cmdlet 参数——之前所有 `Set-Mailbox` 工具设的都是标量属性。还没有在真实 EXO REST 端点上验证过（设计文档自己的 Option analysis 里标出来了，对应 TC-EXO-004）；如果哪天被拒绝，文档里给的后备方案是靠 `exo_get_mailbox` 读出全量列表再 `Set-Mailbox` 整体写回，这次没有实现，因为增量写法目前还没确认过失败。
+- 测试覆盖：`tests/test_tool_calls.py::test_add_email_alias_adds_multiple_without_disturbing_existing`、`::test_add_email_alias_rejects_address_in_use_elsewhere`、`::test_add_email_alias_rejects_empty_list_without_calling_exchange`、`::test_add_email_alias_not_found`（均为本单新增，在 `3ec7afb` 上全部通过）。
+- 自动化测试未覆盖的部分（需要真实租户——见 `docs/tickets/PRD-20480.md` § 自测，TC-EXO-004）：真实 EXO REST 端点是否真的原样接受 `{"Add": [...]}` 这种格式，还是需要走读-合并-写回的后备方案。

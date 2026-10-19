@@ -6,3 +6,4 @@ Maps a code path / tool area to its accumulated-facts doc. Append-only; see `doc
 |---|---|
 | `src/exo_mcp/tools/mailbox.py` | [mailbox.md](mailbox.md) ([中文](mailbox.zh.md)) |
 | `src/exo_mcp/tools/groups.py` | [groups.md](groups.md) ([中文](groups.zh.md)) |
+| `src/exo_mcp/tools/permissions.py` | [permissions.md](permissions.md) ([中文](permissions.zh.md)) |
