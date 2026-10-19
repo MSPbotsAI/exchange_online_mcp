@@ -104,3 +104,16 @@ def parse_size_bytes(size: object) -> int | None:
         amount = float(match.group(1).replace(",", ""))
         return int(amount * _UNIT_FACTOR[match.group(2).upper()])
     return None
+
+
+def contains_case_insensitive(values: list, candidate: str) -> bool:
+    """Whether `candidate` equals (case-insensitively) any item in `values`.
+
+    PRD-20480 D1: the EXO REST InvokeCommand endpoint rejects the
+    `{"Add": [...]}` wire shape for a multi-valued Set-Mailbox property
+    ("Invalid Operation") — the fallback is read-merge-write the full list,
+    which means the merge step must itself be idempotent against values
+    Exchange already returned in a different case.
+    """
+    needle = candidate.strip().lower()
+    return any(isinstance(v, str) and v.strip().lower() == needle for v in values)

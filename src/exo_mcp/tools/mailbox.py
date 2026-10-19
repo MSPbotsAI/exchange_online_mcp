@@ -11,6 +11,7 @@ from ..api_client import CLEAR, ExoClient, ExoError
 from ._common import (
     NO_CREDENTIALS,
     SHARED_MAILBOX_LIMIT_BYTES,
+    contains_case_insensitive,
     parse_size_bytes,
     project,
 )
@@ -31,6 +32,11 @@ _MAILBOX_FIELDS = {
     "DeliverToMailboxAndForward": "deliver_to_mailbox_and_forward",
     "ProhibitSendReceiveQuota": "prohibit_send_receive_quota",
     "WhenMailboxCreated": "when_mailbox_created",
+    # PRD-20480 D3: exo_add_sendonbehalf_permission/exo_add_email_alias both
+    # said "confirm with exo_get_mailbox", but this projection didn't surface
+    # the two properties they write — there was nothing to confirm with.
+    "EmailAddresses": "email_addresses",
+    "GrantSendOnBehalfTo": "grant_send_on_behalf_to",
 }
 
 _STATISTICS_FIELDS = {
@@ -183,6 +189,26 @@ def _shared_conversion(mailbox: dict, statistics: dict | None) -> dict:
     return result
 
 
+# PRD-20480 D4: a plain address or an explicit lowercase "smtp:" prefix both
+# add a secondary (alias) address. Any other prefix -- including "SMTP:",
+# which EXO reads as "make this the new primary" -- is out of scope for this
+# tool (it would silently demote the current primary, contradicting "existing
+# primary is left untouched") and must be rejected per-address rather than
+# forwarded to Exchange.
+def _invalid_alias_prefix(address: str) -> str | None:
+    """Reason the address's prefix is unsupported, or None if it is fine."""
+    if ":" not in address:
+        return None
+    prefix, _, rest = address.partition(":")
+    if prefix == "smtp" and rest:
+        return None
+    return (
+        f"'{address}' has an unsupported address-type prefix. Only a plain address or "
+        "an explicit lowercase 'smtp:' prefix is accepted here; 'SMTP:' (and any other "
+        "prefix) would change the mailbox's primary address, which this tool never does."
+    )
+
+
 def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> None:
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
@@ -200,7 +226,10 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
 
         Read this before converting a mailbox: shared_conversion tells you
         whether it can go licence-free as a shared mailbox (under 50 GB, no
-        archive, no hold). Covers user and shared mailboxes.
+        archive, no hold). Covers user and shared mailboxes. Also returns
+        email_addresses (proxy/alias list) and grant_send_on_behalf_to — use
+        this to confirm exo_add_email_alias/exo_add_sendonbehalf_permission
+        after EXO has replicated the change.
         """
         client = client_factory()
         if client is None:
@@ -565,19 +594,21 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
         ],
         aliases: Annotated[
             list[str],
-            Field(description="One or more alias/old addresses to add, e.g. "
-                              "[\"old-name@contoso.com\"]. Plain addresses are sent "
-                              "as smtp: (case-insensitive secondary); include the "
-                              "SMTP: prefix yourself to set a new primary instead."),
+            Field(description="One or more alias addresses to add, e.g. "
+                              "[\"old-name@contoso.com\"]. Each one must be a plain "
+                              "address or carry an explicit lowercase \"smtp:\" "
+                              "prefix; any other prefix (including \"SMTP:\", which "
+                              "Exchange reads as \"make this the new primary\") is "
+                              "rejected for that address, not forwarded."),
         ],
     ) -> str:
         """Add one or more alias (proxy) addresses to a mailbox (PRD-20480).
 
-        Additive: existing primary and alias addresses are left untouched.
-        Rejects locally if aliases is empty, no round-trip to Exchange. An
-        address already used by a different recipient surfaces Exchange's
-        rejection rather than being dropped silently. Response is never
-        verified: confirm later with exo_get_mailbox.
+        Additive: existing addresses are kept (read-merge-write, not a raw
+        Add). Every address is checked first — invalid prefix,
+        already_present or in_use_by_other are reported per-address rather
+        than failing the whole call; whichever addresses were new are
+        still written. Write is confirmed with a read-back.
         """
         if not aliases:
             return error_envelope(
@@ -588,25 +619,104 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
         if client is None:
             return NO_CREDENTIALS
 
-        wire_addresses = [a if ":" in a else f"smtp:{a}" for a in aliases]
+        try:
+            mailbox = await _read_mailbox(client, identity)
+        except ExoError as exc:
+            return exc.to_envelope()
+        if mailbox is None:
+            return ExoError(
+                404, f"No mailbox found for '{identity}'", code="not_found"
+            ).to_envelope()
+
+        mailbox_identity = mailbox.get("identity")
+        current_addresses = mailbox.get("email_addresses") or []
+
+        results: list[dict] = []
+        to_add: list[str] = []
+        for raw in aliases:
+            prefix_error = _invalid_alias_prefix(raw)
+            if prefix_error is not None:
+                results.append({"address": raw, "result": "invalid", "message": prefix_error})
+                continue
+
+            local = raw.split(":", 1)[1] if ":" in raw else raw
+            wire = f"smtp:{local}"
+            if contains_case_insensitive(current_addresses, wire) or contains_case_insensitive(
+                current_addresses, f"SMTP:{local}"
+            ):
+                results.append({"address": raw, "result": "already_present"})
+                continue
+
+            # D2: check with Exchange whether this address already belongs
+            # to someone before writing it, instead of finding out from an
+            # undifferentiated "Invalid Operation" on the merged write.
+            try:
+                recipients = await client.invoke("Get-Recipient", {"Identity": local})
+            except ExoError as exc:
+                results.append({"address": raw, "result": "invalid", "message": exc.message})
+                continue
+            if recipients:
+                found = recipients[0]
+                found_identity = found.get("Identity")
+                if found_identity and found_identity != mailbox_identity:
+                    found_label = found.get("PrimarySmtpAddress") or found_identity
+                    results.append(
+                        {
+                            "address": raw,
+                            "result": "in_use_by_other",
+                            "message": (
+                                f"'{local}' is already assigned to a different "
+                                f"recipient ('{found_label}')."
+                            ),
+                        }
+                    )
+                    continue
+                # Resolves to this same mailbox but wasn't in email_addresses
+                # (e.g. it is the primary) -- nothing to add.
+                results.append({"address": raw, "result": "already_present"})
+                continue
+
+            results.append({"address": raw, "result": "added"})
+            to_add.append(wire)
+
+        if not to_add:
+            return dump_json_capped(
+                {
+                    "identity": identity,
+                    "results": results,
+                    "accepted": False,
+                    "note": "No new address was written -- see results for why each one "
+                    "was skipped.",
+                }
+            )
+
+        merged = [*current_addresses, *to_add]
         try:
             await client.invoke(
-                "Set-Mailbox",
-                {"Identity": identity, "EmailAddresses": {"Add": wire_addresses}},
+                "Set-Mailbox", {"Identity": identity, "EmailAddresses": merged}
             )
         except ExoError as exc:
             return exc.to_envelope()
 
-        return dump_json_capped(
-            {
-                "identity": identity,
-                "aliases_requested": aliases,
-                "accepted": True,
-                "verified": False,
-                "note": (
-                    "Exchange Online accepted the change, but it replicates across "
-                    "the directory, which commonly takes a few minutes. Confirm "
-                    "with exo_get_mailbox afterwards."
-                ),
-            }
-        )
+        verified = False
+        try:
+            after = await _read_mailbox(client, identity)
+        except ExoError:
+            after = None
+        if after is not None:
+            after_addresses = after.get("email_addresses") or []
+            verified = all(contains_case_insensitive(after_addresses, w) for w in to_add)
+
+        response: dict = {
+            "identity": identity,
+            "results": results,
+            "accepted": True,
+            "verified": verified,
+        }
+        if not verified:
+            response["note"] = (
+                "Exchange Online accepted the change, but it replicates across "
+                "the directory, which commonly takes a few minutes. Confirm "
+                "with exo_get_mailbox afterwards."
+            )
+        return dump_json_capped(response)
