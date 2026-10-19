@@ -128,12 +128,12 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
     ) -> str:
         """Grant a trustee SendOnBehalf on a mailbox (PRD-20480).
 
-        Different right from exo_add_mailbox_permission's FullAccess: mail
-        shows as sent "on behalf of" the mailbox, not full access to it —
-        the shared-mailbox "send on behalf" case. Additive: existing
-        delegates are kept (read-merge-write, not a raw Add). Delegate must
-        already be a recipient; already-granted reports already_present
-        instead of erroring. Write is confirmed with a read-back.
+        Different right from exo_add_mailbox_permission's FullAccess.
+        Additive (read-merge-write). Delegate must already be a recipient;
+        already-granted reports already_present. Write is confirmed with a
+        read-back, but a repeat call within the replication window may
+        still report "added" (N3). Wait for replication or confirm with
+        exo_get_mailbox before the next write (N4).
         """
         client = client_factory()
         if client is None:
@@ -166,12 +166,22 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
         delegate_record = recipients[0]
         delegate_identity = delegate_record.get("Identity")
         delegate_label = delegate_record.get("PrimarySmtpAddress") or delegate_identity
+        # N3 (INT comment 90170264132422, 2026-10-19): GrantSendOnBehalfTo is
+        # stored as the delegate's object id, not its UPN/SMTP address, so a
+        # list that has finished replicating may only contain
+        # ExternalDirectoryObjectId -- matching on identity/label alone can
+        # miss it and report "added" again for an already-granted delegate.
+        delegate_object_id = delegate_record.get("ExternalDirectoryObjectId")
 
         current = mailbox.get("grant_send_on_behalf_to") or []
         already_present = (
             contains_case_insensitive(current, delegate)
             or (delegate_identity and contains_case_insensitive(current, str(delegate_identity)))
             or (delegate_label and contains_case_insensitive(current, str(delegate_label)))
+            or (
+                delegate_object_id
+                and contains_case_insensitive(current, str(delegate_object_id))
+            )
         )
         if already_present:
             return dump_json_capped(
