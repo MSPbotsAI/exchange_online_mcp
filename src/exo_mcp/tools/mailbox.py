@@ -202,10 +202,19 @@ def _invalid_alias_prefix(address: str) -> str | None:
     prefix, _, rest = address.partition(":")
     if prefix == "smtp" and rest:
         return None
+    # PRD-20480 N2: only "SMTP:" actually means "make this the new primary" to
+    # Exchange -- every other prefix (x500:, sip:, a typo'd case variant, ...)
+    # is simply not a form this tool accepts, and saying "primary address" for
+    # those is misleading (INT comment 90170264132422, 2026-10-19).
+    if prefix == "SMTP":
+        return (
+            f"'{address}' uses the uppercase 'SMTP:' prefix, which Exchange reads as "
+            "\"make this the new primary address\" -- out of scope for this tool, which "
+            "never changes the primary. Use a plain address or lowercase 'smtp:' instead."
+        )
     return (
         f"'{address}' has an unsupported address-type prefix. Only a plain address or "
-        "an explicit lowercase 'smtp:' prefix is accepted here; 'SMTP:' (and any other "
-        "prefix) would change the mailbox's primary address, which this tool never does."
+        "an explicit lowercase 'smtp:' prefix is accepted here."
     )
 
 
@@ -604,11 +613,11 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
     ) -> str:
         """Add one or more alias (proxy) addresses to a mailbox (PRD-20480).
 
-        Additive: existing addresses are kept (read-merge-write, not a raw
-        Add). Every address is checked first — invalid prefix,
-        already_present or in_use_by_other are reported per-address rather
-        than failing the whole call; whichever addresses were new are
-        still written. Write is confirmed with a read-back.
+        Additive (read-merge-write). Every address is checked first —
+        invalid prefix, already_present or in_use_by_other are reported
+        per-address; new addresses are still written. Write is confirmed
+        with a read-back. Wait for replication or confirm with
+        exo_get_mailbox before the next write to the same mailbox (N4).
         """
         if not aliases:
             return error_envelope(
@@ -653,8 +662,23 @@ def register(mcp: FastMCP, client_factory: Callable[[], ExoClient | None]) -> No
             try:
                 recipients = await client.invoke("Get-Recipient", {"Identity": local})
             except ExoError as exc:
-                results.append({"address": raw, "result": "invalid", "message": exc.message})
-                continue
+                # N1 (INT comment 90170264132422, 2026-10-19): a free address
+                # is not an empty 200 response -- real Exchange answers
+                # Get-Recipient -Identity <unused address> with a 400
+                # "couldn't be found", which api_client maps to code
+                # "not_found". That is exactly what "nobody holds this
+                # address yet" looks like, so treat it the same as an empty
+                # result and let the address through to the write list.
+                # Only a different failure (upstream_error, rate_limited,
+                # ...) means we genuinely could not check, and those are
+                # reported as invalid rather than silently added.
+                if exc.code == "not_found":
+                    recipients = []
+                else:
+                    results.append(
+                        {"address": raw, "result": "invalid", "message": exc.message}
+                    )
+                    continue
             if recipients:
                 found = recipients[0]
                 found_identity = found.get("Identity")

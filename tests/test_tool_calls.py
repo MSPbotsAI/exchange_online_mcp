@@ -941,6 +941,40 @@ async def test_add_sendonbehalf_permission_already_present_skips_write(
 
 
 @pytest.mark.asyncio
+async def test_add_sendonbehalf_permission_already_present_by_object_id(
+    mcp, upstream, credentials
+):
+    """N3 (comment 90170264132422, 2026-10-19): GrantSendOnBehalfTo is
+    stored as the delegate's object id, not its UPN/SMTP address -- once
+    replication has finished, the mailbox's list may only contain that id,
+    so the already_present check has to compare against it too, not just
+    Identity/PrimarySmtpAddress."""
+    delegate_object_id = "c1dcd1cd-0000-4000-8000-000000000001"
+    upstream.responses["Get-Mailbox"] = [
+        {"Identity": "shared-id", "GrantSendOnBehalfTo": [delegate_object_id]}
+    ]
+    upstream.responses["Get-Recipient"] = [
+        {**_DELEGATE_RECIPIENT, "ExternalDirectoryObjectId": delegate_object_id}
+    ]
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_sendonbehalf_permission",
+        {"identity": "shared@contoso.com", "delegate": "bob@contoso.com"},
+    )
+
+    assert result == {
+        "identity": "shared@contoso.com",
+        "delegate": "bob@contoso.com",
+        "result": "already_present",
+        "granted": True,
+    }
+    cmdlets = [req["cmdlet"] for req in upstream.invoke_requests]
+    assert "Set-Mailbox" not in cmdlets
+
+
+@pytest.mark.asyncio
 async def test_add_sendonbehalf_permission_rejects_delegate_that_does_not_exist(
     mcp, upstream, credentials
 ):
@@ -992,9 +1026,14 @@ async def test_add_email_alias_adds_multiple_without_disturbing_existing(
 ):
     """TC-EXO-002/AC4: D1 fix -- EXO REST rejects {"Add": [...]}, so both new
     aliases must be merged into the current address list and written back
-    as one full list, preserving the existing primary."""
+    as one full list, preserving the existing primary.
+
+    N1 (comment 90170264132422, 2026-10-19): a free address is mocked as the
+    400 "couldn't be found" error real Exchange actually returns, not an
+    empty-but-200 list -- the previous [] mock did not catch the bug where
+    every new address was rejected as invalid."""
     upstream.responses["Get-Mailbox"] = [_ALICE_MAILBOX]
-    upstream.responses["Get-Recipient"] = []
+    upstream.cmdlet_errors["Get-Recipient"] = NOT_FOUND_ERROR
     upstream.responses["Set-Mailbox"] = []
 
     result = await call(
@@ -1081,8 +1120,11 @@ async def test_add_email_alias_partial_success_writes_only_valid_addresses(
     )
     assert result["results"][0]["result"] == "in_use_by_other"
 
-    # Second call, this address resolves to nobody -- added.
-    upstream.responses["Get-Recipient"] = []
+    # Second call, this address resolves to nobody. N1 (comment
+    # 90170264132422, 2026-10-19): real Exchange reports that as a 400
+    # "couldn't be found" error, not an empty-but-200 list -- mock the error
+    # so this test actually exercises the fixed not_found-means-free path.
+    upstream.cmdlet_errors["Get-Recipient"] = NOT_FOUND_ERROR
     result2 = await call(
         mcp,
         credentials,
@@ -1091,6 +1133,69 @@ async def test_add_email_alias_partial_success_writes_only_valid_addresses(
     )
     assert result2["results"][0]["result"] == "added"
     assert result2["accepted"] is True
+
+
+@pytest.mark.asyncio
+async def test_add_email_alias_free_address_is_added_not_invalid(mcp, upstream, credentials):
+    """N1 (High, blocking -- comment 90170264132422, 2026-10-19): INT found
+    every new address rejected as invalid. Root cause: real Exchange answers
+    Get-Recipient -Identity <unused address> with a 400 "couldn't be found"
+    (api_client maps it to ExoError(code=not_found)), and the alias loop
+    recorded every ExoError from that lookup as invalid instead of treating
+    not_found the same as an empty result. Fix: in mailbox.py, ExoError with
+    code "not_found" from Get-Recipient now means "address is free"."""
+    upstream.responses["Get-Mailbox"] = [_ALICE_MAILBOX]
+    upstream.cmdlet_errors["Get-Recipient"] = NOT_FOUND_ERROR
+    upstream.responses["Set-Mailbox"] = []
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_email_alias",
+        {"identity": "alice@contoso.com", "aliases": ["qa20480.a1@contoso.com"]},
+    )
+
+    assert result["results"] == [{"address": "qa20480.a1@contoso.com", "result": "added"}]
+    assert result["accepted"] is True
+
+    set_mailbox_call = next(r for r in upstream.invoke_requests if r["cmdlet"] == "Set-Mailbox")
+    assert "smtp:qa20480.a1@contoso.com" in set_mailbox_call["parameters"]["EmailAddresses"]
+    # The existing primary must still be present -- this is additive, D1.
+    assert "SMTP:alice@contoso.com" in set_mailbox_call["parameters"]["EmailAddresses"]
+
+
+@pytest.mark.asyncio
+async def test_add_email_alias_other_get_recipient_error_still_invalid(
+    mcp, upstream, credentials
+):
+    """N1 guard: the not_found-means-free fix must not swallow every
+    Get-Recipient failure -- a different error (e.g. a malformed identity,
+    classified invalid_argument rather than not_found) still has to be
+    reported as invalid rather than silently added, since the tool
+    genuinely could not check the address."""
+    upstream.responses["Get-Mailbox"] = [_ALICE_MAILBOX]
+    upstream.cmdlet_errors["Get-Recipient"] = (
+        400,
+        {"error": {"message": "The identity parameter is malformed.", "details": []}},
+    )
+
+    result = await call(
+        mcp,
+        credentials,
+        "exo_add_email_alias",
+        {"identity": "alice@contoso.com", "aliases": ["qa20480.a1@contoso.com"]},
+    )
+
+    assert result["results"] == [
+        {
+            "address": "qa20480.a1@contoso.com",
+            "result": "invalid",
+            "message": "The identity parameter is malformed.",
+        }
+    ]
+    assert result["accepted"] is False
+    cmdlets = [req["cmdlet"] for req in upstream.invoke_requests]
+    assert "Set-Mailbox" not in cmdlets
 
 
 @pytest.mark.asyncio
@@ -1132,6 +1237,10 @@ async def test_add_email_alias_rejects_uppercase_smtp_prefix(mcp, upstream, cred
 
     assert result["results"][0]["result"] == "invalid"
     assert "SMTP:new-primary@contoso.com" in result["results"][0]["message"]
+    # N2 (comment 90170264132422, 2026-10-19): the "SMTP:" case gets its own
+    # message naming the primary-address consequence -- it must not be the
+    # generic "unsupported prefix" wording used for other prefixes.
+    assert "primary address" in result["results"][0]["message"]
     assert result["accepted"] is False
     cmdlets = [req["cmdlet"] for req in upstream.invoke_requests]
     assert "Get-Recipient" not in cmdlets
@@ -1141,7 +1250,12 @@ async def test_add_email_alias_rejects_uppercase_smtp_prefix(mcp, upstream, cred
 @pytest.mark.asyncio
 async def test_add_email_alias_rejects_other_prefixes(mcp, upstream, credentials):
     """D4: any prefix other than a plain address or lowercase 'smtp:' is
-    rejected the same way (e.g. 'x500:', 'sip:')."""
+    rejected the same way (e.g. 'x500:', 'sip:').
+
+    N2 (comment 90170264132422, 2026-10-19): unlike 'SMTP:', a non-smtp
+    prefix does not change the primary address, so the message must not
+    claim it would -- it should instead say only a plain address or
+    lowercase 'smtp:' is supported."""
     upstream.responses["Get-Mailbox"] = [_ALICE_MAILBOX]
 
     result = await call(
@@ -1152,6 +1266,9 @@ async def test_add_email_alias_rejects_other_prefixes(mcp, upstream, credentials
     )
 
     assert result["results"][0]["result"] == "invalid"
+    message = result["results"][0]["message"]
+    assert "primary address" not in message
+    assert "lowercase 'smtp:'" in message
 
 
 @pytest.mark.asyncio

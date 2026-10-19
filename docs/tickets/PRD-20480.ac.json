@@ -92,15 +92,15 @@
     "ac": "AC4",
     "type": "manual",
     "source": "design",
-    "text": "Given the Add-hashtable wire format assumption in Tech design §B option analysis, When exo_add_email_alias / exo_add_sendonbehalf_permission are run against the real EXO REST endpoint, Then confirm whether {\"Add\": [...]} is accepted as-is or the read-merge-write fallback is needed",
+    "text": "Given the Add-hashtable wire format assumption in Tech design \u00a7B option analysis, When exo_add_email_alias / exo_add_sendonbehalf_permission are run against the real EXO REST endpoint, Then confirm whether {\"Add\": [...]} is accepted as-is or the read-merge-write fallback is needed",
     "steps": [
       "Call exo_add_email_alias against a disposable test mailbox on the INT tenant",
       "Inspect the raw HTTP response/status from the EXO REST endpoint",
-      "If rejected, switch the implementation to the read-merge-write fallback documented in Tech design §B"
+      "If rejected, switch the implementation to the read-merge-write fallback documented in Tech design \u00a7B"
     ],
     "expect": "either a 200-class success with the alias actually added (confirmed via exo_get_mailbox), or a specific rejection reason that tells us to use the fallback",
     "result": "pass",
-    "evidence": "RESOLVED by real-tenant INT testing (comment 90170264109063, Minnie Zhou, 2026-10-19): \"both tools call Set-Mailbox with {\\\"GrantSendOnBehalfTo\\\": {\\\"Add\\\": [...]}} ... The EXO REST InvokeCommand endpoint rejects this with 'Invalid Operation'\". The read-merge-write fallback documented in Tech design §B has been implemented (D1, permissions.py + mailbox.py) and is covered by TC-EXO-001/002/006/007. Whether the new fallback itself round-trips on a live tenant is a separate, still-open question -- see TC-EXO-013."
+    "evidence": "RESOLVED by real-tenant INT testing (comment 90170264109063, Minnie Zhou, 2026-10-19): \"both tools call Set-Mailbox with {\\\"GrantSendOnBehalfTo\\\": {\\\"Add\\\": [...]}} ... The EXO REST InvokeCommand endpoint rejects this with 'Invalid Operation'\". The read-merge-write fallback documented in Tech design \u00a7B has been implemented (D1, permissions.py + mailbox.py) and is covered by TC-EXO-001/002/006/007. Whether the new fallback itself round-trips on a live tenant is a separate, still-open question -- see TC-EXO-013."
   },
   {
     "id": "TC-MSG-004",
@@ -353,5 +353,71 @@
     ],
     "result": "pass",
     "evidence": "pytest tests/test_tools.py::test_graph_add_group_owner_other_post_failure_uses_standard_envelope -- 1 passed. INT comment 90170264109063 D5: 'errors are also returned as {status:error,detail:...} instead of the error envelope used by the other tools'."
+  },
+  {
+    "id": "TC-EXO-014",
+    "ac": "AC4",
+    "type": "auto",
+    "source": "dev",
+    "text": "Given a new (unused) alias address, When exo_add_email_alias is called, Then Get-Recipient's real-Exchange not_found error (400 'couldn't be found') is treated as 'address is free' and the address is added, not rejected as invalid",
+    "tests": [
+      "exchange_online_mcp/tests/test_tool_calls.py::test_add_email_alias_free_address_is_added_not_invalid",
+      "exchange_online_mcp/tests/test_tool_calls.py::test_add_email_alias_other_get_recipient_error_still_invalid"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tool_calls.py::test_add_email_alias_free_address_is_added_not_invalid tests/test_tool_calls.py::test_add_email_alias_other_get_recipient_error_still_invalid -- 2 passed. N1 fix (INT comment 90170264132422, 2026-10-19, round-2 TEST): INT found every new address rejected as invalid -- real Exchange answers Get-Recipient -Identity <unused address> with a 400 'couldn't be found', which api_client classifies as ExoError(code=not_found); mailbox.py's alias loop now treats that specific code as 'address free' (added to the write list) and keeps recording any other Get-Recipient error as invalid. Also fixed the two existing tests (test_add_email_alias_adds_multiple_without_disturbing_existing, test_add_email_alias_partial_success_writes_only_valid_addresses) that previously mocked a free address as an empty 200 list, which is not what Exchange returns and is why the bug shipped in round 2 undetected -- both now mock the same cmdlet_errors[\"Get-Recipient\"] = NOT_FOUND_ERROR used here. Not verified on a live tenant -- no EXO credentials available in this sandbox; retest on INT per the comment's 'Retest' section is still needed."
+  },
+  {
+    "id": "TC-EXO-015",
+    "ac": "AC4",
+    "type": "auto",
+    "source": "dev",
+    "text": "Given an alias address with the uppercase 'SMTP:' prefix vs. any other unsupported prefix (e.g. x500:), When exo_add_email_alias is called, Then each gets a message matching its actual consequence -- 'SMTP:' names the primary-address change it would cause, any other prefix says only a plain address or lowercase 'smtp:' is supported",
+    "tests": [
+      "exchange_online_mcp/tests/test_tool_calls.py::test_add_email_alias_rejects_uppercase_smtp_prefix",
+      "exchange_online_mcp/tests/test_tool_calls.py::test_add_email_alias_rejects_other_prefixes"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tool_calls.py::test_add_email_alias_rejects_uppercase_smtp_prefix tests/test_tool_calls.py::test_add_email_alias_rejects_other_prefixes -- 2 passed. N2 fix (comment 90170264132422): INT found 'x500:' rejected with wording that claimed it 'would change the mailbox's primary address', which is only true for 'SMTP:'. mailbox.py's _invalid_alias_prefix now returns two distinct messages."
+  },
+  {
+    "id": "TC-EXO-016",
+    "ac": "AC3",
+    "type": "auto",
+    "source": "dev",
+    "text": "Given a mailbox whose GrantSendOnBehalfTo list, after replication, contains only the delegate's ExternalDirectoryObjectId (not UPN/SMTP address), When exo_add_sendonbehalf_permission is called again for that delegate, Then it is reported already_present instead of added again",
+    "tests": [
+      "exchange_online_mcp/tests/test_tool_calls.py::test_add_sendonbehalf_permission_already_present_by_object_id"
+    ],
+    "result": "pass",
+    "evidence": "pytest tests/test_tool_calls.py::test_add_sendonbehalf_permission_already_present_by_object_id -- 1 passed. N3 fix (comment 90170264132422): INT found a repeat call within the replication window reported 'added' twice -- GrantSendOnBehalfTo is stored as the delegate's object id, which the already_present check did not compare against. permissions.py now also compares Get-Recipient's ExternalDirectoryObjectId against the current list. Not independently verified against a live tenant's actual replication timing -- no EXO credentials available in this sandbox; the unit test proves the comparison logic, not the real-world race window."
+  },
+  {
+    "id": "TC-EXO-017",
+    "ac": "AC3",
+    "type": "manual",
+    "source": "dev",
+    "text": "Given the N3/N4 notes (comment 90170264132422), When the exo_add_sendonbehalf_permission and exo_add_email_alias tool descriptions are read by a caller, Then both state that a repeat call within the replication window may still report 'added', and that for several changes to the same mailbox one should wait for replication or confirm with exo_get_mailbox before the next write",
+    "steps": [
+      "Call list_tools() (or read the MCP tool catalog) for exo_add_sendonbehalf_permission and exo_add_email_alias",
+      "Confirm each description mentions the replication-window caveat and points to exo_get_mailbox before the next write"
+    ],
+    "expect": "both descriptions contain the N4 replication-wait note; exo_add_sendonbehalf_permission's also contains the N3 'may still report added' caveat",
+    "result": "pass",
+    "evidence": "Read both descriptions via mcp.list_tools() in a throwaway script against this branch: exo_add_email_alias.description ends '...Wait for replication or confirm with exo_get_mailbox before the next write to the same mailbox (N4).'; exo_add_sendonbehalf_permission.description ends '...but a repeat call within the replication window may still report \"added\" (N3). Wait for replication or confirm with exo_get_mailbox before the next write (N4).'. Both tool descriptions stayed under the repo's 500-char test_tools_list_snapshot ceiling (test_tools.py) after trimming, verified by test_tools_list_snapshot passing in the same pytest run as the other N1-N3 tests."
+  },
+  {
+    "id": "TC-EXO-018",
+    "ac": "AC3",
+    "type": "manual",
+    "source": "dev",
+    "text": "Rollout items R1-R3 from comment 90170264132422 (Graph app registration permissions, admin consent, and a re-consent plan for already-connected tenants) are go-live/permission actions outside this repo's code, not implementable or testable here",
+    "steps": [
+      "No code action possible: R1/R2 are Entra ID app-registration/consent grants in the mspbots.ai tenant; R3 is a customer-facing re-consent rollout plan",
+      "Recorded here only so they are not silently dropped"
+    ],
+    "expect": "N/A -- tracked for human follow-up, not a code deliverable",
+    "result": "blocked",
+    "evidence": "Out of code scope per this flow's rules (no code project owns Entra ID app-registration consent); left unresolved and documented in docs/tickets/PRD-20480-r3.md 'Rollout items (not actioned)' section for a human to pick up."
   }
 ]
